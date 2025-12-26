@@ -53,6 +53,10 @@
     .alert { padding: 12px; border-radius: 4px; margin-bottom: 15px; }
     .alert-success { background: #d4edda; color: #155724; }
     .alert-error { background: #f8d7da; color: #721c24; }
+    .logos { display: flex; align-items: center; gap: 15px; }
+    .logos img { height: 32px; width: auto; }
+    .login-logos { display: flex; justify-content: center; align-items: center; gap: 20px; margin-bottom: 30px; }
+    .login-logos img { height: 40px; width: auto; }
   </style>
 </head>
 <body>
@@ -60,6 +64,10 @@
     <!-- Login View -->
     <div id="login-view" class="login-container hidden">
       <div class="login-box">
+        <div class="login-logos">
+          <img src="/images/logivations-1-1024x256.webp" alt="Logivations">
+          <img src="/images/logo_PixelRobotics-1-scaled.png" alt="PixelRobotics">
+        </div>
         <h1>Superkey</h1>
         <p style="margin-bottom: 20px; color: #666;">SSH Key Management Tool</p>
         <a href="/auth/google" class="btn btn-primary">Sign in with Google</a>
@@ -69,7 +77,11 @@
     <!-- Main App -->
     <div id="main-view" class="hidden">
       <header>
-        <h1>Superkey</h1>
+        <div class="logos">
+          <img src="/images/logivations-1-1024x256.webp" alt="Logivations">
+          <img src="/images/logo_PixelRobotics-1-scaled.png" alt="PixelRobotics">
+          <h1>Superkey</h1>
+        </div>
         <div class="user-info">
           <span id="user-name"></span>
           <span id="admin-badge" class="tag tag-green hidden">Admin</span>
@@ -152,8 +164,9 @@
           <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <h2>Servers</h2>
-              <button class="btn btn-primary" onclick="showAddServerModal()">Add Server</button>
+              <button class="btn btn-secondary" onclick="importServers()">Import from SSH Configs</button>
             </div>
+            <div id="import-status" class="alert hidden" style="margin-bottom: 15px;"></div>
             <table>
               <thead>
                 <tr><th>Hostname</th><th>Description</th><th>Labels</th><th>Actions</th></tr>
@@ -172,7 +185,7 @@
             </div>
             <table>
               <thead>
-                <tr><th>Name</th><th>Groups with Access</th><th>Users with Direct Access</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Groups with Access</th><th>Actions</th></tr>
               </thead>
               <tbody id="labels-list"></tbody>
             </table>
@@ -184,11 +197,15 @@
           <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <h2>Groups</h2>
-              <button class="btn btn-primary" onclick="showAddGroupModal()">Add Group</button>
+              <button class="btn btn-secondary" onclick="syncAllGroups()">Sync from Google</button>
             </div>
+            <div id="sync-status" class="alert hidden" style="margin-bottom: 15px;"></div>
+            <p style="margin-bottom: 15px; color: #666; font-size: 0.9rem;">
+              Group membership is synced from Google Workspace. Set up a service account for automatic sync.
+            </p>
             <table>
               <thead>
-                <tr><th>Name</th><th>Google Group Email</th><th>Members</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Google Group Email</th><th>Members</th></tr>
               </thead>
               <tbody id="groups-list"></tbody>
             </table>
@@ -236,28 +253,15 @@
             </div>
             <div id="server-access-info" class="hidden">
               <div class="access-section">
-                <h4>Access by Group</h4>
+                <h4>Users with Access</h4>
                 <table>
                   <thead><tr><th>User</th><th>Email</th><th>Via Group</th><th>Has Key</th></tr></thead>
-                  <tbody id="server-access-groups"></tbody>
-                </table>
-              </div>
-              <div class="access-section">
-                <h4>Direct User Access</h4>
-                <table>
-                  <thead><tr><th>User</th><th>Email</th><th>Has Key</th></tr></thead>
                   <tbody id="server-access-users"></tbody>
                 </table>
               </div>
             </div>
           </div>
 
-          <div class="card">
-            <h2>Export Keys to Filesystem</h2>
-            <p style="margin-bottom: 15px; color: #666;">Export all public keys to the configured directory for each server.</p>
-            <button class="btn btn-primary" onclick="exportKeys()">Export Keys</button>
-            <div id="export-message" class="alert hidden" style="margin-top: 15px;"></div>
-          </div>
         </div>
       </div>
     </div>
@@ -306,27 +310,6 @@
     </div>
   </div>
 
-  <!-- Add Group Modal -->
-  <div id="group-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Add Group</h3>
-        <span class="modal-close" onclick="closeModal('group-modal')">&times;</span>
-      </div>
-      <form onsubmit="saveGroup(event)">
-        <div class="form-group">
-          <label>Group Name</label>
-          <input type="text" id="group-name" required>
-        </div>
-        <div class="form-group">
-          <label>Google Group Email (optional)</label>
-          <input type="email" id="group-email">
-        </div>
-        <button type="submit" class="btn btn-primary">Save</button>
-      </form>
-    </div>
-  </div>
-
   <!-- Manage Label Access Modal -->
   <div id="label-access-modal" class="modal hidden">
     <div class="modal-content">
@@ -345,34 +328,6 @@
         </div>
         <div id="label-groups-list"></div>
       </div>
-      <div class="access-section">
-        <h4>Users with Direct Access</h4>
-        <div class="flex-row" style="margin-bottom: 10px;">
-          <select id="add-user-to-label">
-            <option value="">-- Add User --</option>
-          </select>
-          <button class="btn btn-small btn-primary" onclick="addUserToLabel()">Add</button>
-        </div>
-        <div id="label-users-list"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Manage Group Members Modal -->
-  <div id="group-members-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Members: <span id="group-members-name"></span></h3>
-        <span class="modal-close" onclick="closeModal('group-members-modal')">&times;</span>
-      </div>
-      <input type="hidden" id="group-members-id">
-      <div class="flex-row" style="margin-bottom: 15px;">
-        <select id="add-user-to-group">
-          <option value="">-- Add User --</option>
-        </select>
-        <button class="btn btn-small btn-primary" onclick="addUserToGroup()">Add</button>
-      </div>
-      <div id="group-users-list"></div>
     </div>
   </div>
 
@@ -498,15 +453,11 @@
 
     async function renderLabels() {
       const rows = await Promise.all(allLabels.map(async l => {
-        const [groups, users] = await Promise.all([
-          api(`/api/labels/${l.id}/groups`),
-          api(`/api/labels/${l.id}/users`)
-        ]);
+        const groups = await api(`/api/labels/${l.id}/groups`);
         return `
           <tr>
             <td>${l.name}</td>
             <td>${groups.map(g => `<span class="tag">${g.name}</span>`).join('') || '-'}</td>
-            <td>${users.map(u => `<span class="tag">${u.email}</span>`).join('') || '-'}</td>
             <td>
               <button class="btn btn-small btn-secondary" onclick="manageLabelAccess(${l.id}, '${l.name}')">Manage Access</button>
               <button class="btn btn-small btn-danger" onclick="deleteLabel(${l.id})">Delete</button>
@@ -525,10 +476,6 @@
             <td>${g.name}</td>
             <td>${g.google_group_email || '-'}</td>
             <td>${members.length} members</td>
-            <td>
-              <button class="btn btn-small btn-secondary" onclick="manageGroupMembers(${g.id}, '${g.name}')">Manage</button>
-              ${g.name !== 'superkey_admins' ? `<button class="btn btn-small btn-danger" onclick="deleteGroup(${g.id})">Delete</button>` : ''}
-            </td>
           </tr>
         `;
       }));
@@ -556,6 +503,28 @@
     // Modals
     function closeModal(id) {
       document.getElementById(id).classList.add('hidden');
+    }
+
+    // Import servers from SSH config files
+    async function importServers() {
+      const msg = document.getElementById('import-status');
+      msg.className = 'alert';
+      msg.textContent = 'Importing servers from SSH config files...';
+      msg.classList.remove('hidden');
+
+      try {
+        const result = await api('/api/import-servers', { method: 'POST' });
+        msg.className = 'alert alert-success';
+        msg.textContent = `Import complete: ${result.imported} servers imported, ${result.skipped} skipped (already exist). Processed ${result.configFiles} config files.`;
+        allServers = await api('/api/servers');
+        allLabels = await api('/api/labels');
+        renderServers();
+        renderLabels();
+        populateAdminSelects();
+      } catch (e) {
+        msg.className = 'alert alert-error';
+        msg.textContent = e.message;
+      }
     }
 
     function showAddServerModal() {
@@ -628,28 +597,28 @@
       }
     }
 
-    function showAddGroupModal() {
-      document.getElementById('group-name').value = '';
-      document.getElementById('group-email').value = '';
-      document.getElementById('group-modal').classList.remove('hidden');
-    }
+    // Sync all groups from Google Workspace
+    async function syncAllGroups() {
+      const msg = document.getElementById('sync-status');
+      msg.className = 'alert';
+      msg.textContent = 'Syncing groups from Google Workspace...';
+      msg.classList.remove('hidden');
 
-    async function saveGroup(e) {
-      e.preventDefault();
-      await api('/api/groups', { method: 'POST', body: JSON.stringify({
-        name: document.getElementById('group-name').value,
-        google_group_email: document.getElementById('group-email').value || null
-      })});
-      closeModal('group-modal');
-      allGroups = await api('/api/groups');
-      renderGroups();
-    }
-
-    async function deleteGroup(id) {
-      if (confirm('Delete this group?')) {
-        await api(`/api/groups/${id}`, { method: 'DELETE' });
-        allGroups = await api('/api/groups');
+      try {
+        const result = await api('/api/sync-all-groups', { method: 'POST' });
+        msg.className = 'alert alert-success';
+        let statusText = `Sync complete: ${result.googleUsers || 0} users, ${result.googleGroups || 0} groups from Google. `;
+        statusText += `${result.memberships} memberships synced. `;
+        if (result.createdUsers) statusText += `${result.createdUsers} users created. `;
+        if (result.removedUsers) statusText += `${result.removedUsers} users removed. `;
+        if (result.createdGroups) statusText += `${result.createdGroups} groups created. `;
+        if (result.removedGroups) statusText += `${result.removedGroups} groups removed.`;
+        msg.textContent = statusText;
+        await loadAllData();
         renderGroups();
+      } catch (e) {
+        msg.className = 'alert alert-error';
+        msg.textContent = e.message;
       }
     }
 
@@ -658,25 +627,16 @@
       document.getElementById('label-access-id').value = labelId;
       document.getElementById('label-access-name').textContent = labelName;
 
-      // Populate dropdowns
+      // Populate dropdown
       document.getElementById('add-group-to-label').innerHTML = '<option value="">-- Add Group --</option>' +
         allGroups.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
-      document.getElementById('add-user-to-label').innerHTML = '<option value="">-- Add User --</option>' +
-        allUsers.map(u => `<option value="${u.id}">${u.name || u.email}</option>`).join('');
 
       // Load current access
-      const [groups, users] = await Promise.all([
-        api(`/api/labels/${labelId}/groups`),
-        api(`/api/labels/${labelId}/users`)
-      ]);
+      const groups = await api(`/api/labels/${labelId}/groups`);
 
       document.getElementById('label-groups-list').innerHTML = groups.map(g => `
         <span class="tag">${g.name} <span style="cursor:pointer" onclick="removeGroupFromLabel(${labelId}, ${g.id})">×</span></span>
       `).join('') || 'No groups';
-
-      document.getElementById('label-users-list').innerHTML = users.map(u => `
-        <span class="tag">${u.email} <span style="cursor:pointer" onclick="removeUserFromLabel(${labelId}, ${u.id})">×</span></span>
-      `).join('') || 'No users';
 
       document.getElementById('label-access-modal').classList.remove('hidden');
     }
@@ -695,54 +655,6 @@
       await api(`/api/labels/${labelId}/groups/${groupId}`, { method: 'DELETE' });
       manageLabelAccess(labelId, document.getElementById('label-access-name').textContent);
       renderLabels();
-    }
-
-    async function addUserToLabel() {
-      const labelId = document.getElementById('label-access-id').value;
-      const userId = document.getElementById('add-user-to-label').value;
-      if (userId) {
-        await api(`/api/labels/${labelId}/users/${userId}`, { method: 'POST' });
-        manageLabelAccess(labelId, document.getElementById('label-access-name').textContent);
-        renderLabels();
-      }
-    }
-
-    async function removeUserFromLabel(labelId, userId) {
-      await api(`/api/labels/${labelId}/users/${userId}`, { method: 'DELETE' });
-      manageLabelAccess(labelId, document.getElementById('label-access-name').textContent);
-      renderLabels();
-    }
-
-    // Group members management
-    async function manageGroupMembers(groupId, groupName) {
-      document.getElementById('group-members-id').value = groupId;
-      document.getElementById('group-members-name').textContent = groupName;
-
-      document.getElementById('add-user-to-group').innerHTML = '<option value="">-- Add User --</option>' +
-        allUsers.map(u => `<option value="${u.id}">${u.name || u.email}</option>`).join('');
-
-      const members = await api(`/api/groups/${groupId}/users`);
-      document.getElementById('group-users-list').innerHTML = members.map(u => `
-        <span class="tag">${u.email} <span style="cursor:pointer" onclick="removeUserFromGroup(${groupId}, ${u.id})">×</span></span>
-      `).join('') || 'No members';
-
-      document.getElementById('group-members-modal').classList.remove('hidden');
-    }
-
-    async function addUserToGroup() {
-      const groupId = document.getElementById('group-members-id').value;
-      const userId = document.getElementById('add-user-to-group').value;
-      if (userId) {
-        await api(`/api/groups/${groupId}/users/${userId}`, { method: 'POST' });
-        manageGroupMembers(groupId, document.getElementById('group-members-name').textContent);
-        renderGroups();
-      }
-    }
-
-    async function removeUserFromGroup(groupId, userId) {
-      await api(`/api/groups/${groupId}/users/${userId}`, { method: 'DELETE' });
-      manageGroupMembers(groupId, document.getElementById('group-members-name').textContent);
-      renderGroups();
     }
 
     // Admin views
@@ -767,22 +679,14 @@
       }
       const access = await api(`/api/server-access/${serverId}`);
 
-      document.getElementById('server-access-groups').innerHTML = access.byGroup.map(u => `
+      document.getElementById('server-access-users').innerHTML = access.users.map(u => `
         <tr>
           <td>${u.name || '-'}</td>
           <td>${u.email}</td>
           <td><span class="tag">${u.group_name}</span></td>
           <td>${u.public_key ? '<span class="tag tag-green">Yes</span>' : '<span class="tag">No</span>'}</td>
         </tr>
-      `).join('') || '<tr><td colspan="4">No group access</td></tr>';
-
-      document.getElementById('server-access-users').innerHTML = access.byUser.map(u => `
-        <tr>
-          <td>${u.name || '-'}</td>
-          <td>${u.email}</td>
-          <td>${u.public_key ? '<span class="tag tag-green">Yes</span>' : '<span class="tag">No</span>'}</td>
-        </tr>
-      `).join('') || '<tr><td colspan="3">No direct user access</td></tr>';
+      `).join('') || '<tr><td colspan="4">No users have access</td></tr>';
 
       document.getElementById('server-access-info').classList.remove('hidden');
     }
@@ -791,20 +695,6 @@
       document.querySelector('[data-tab="access-admin"]').click();
       document.getElementById('admin-user-select').value = userId;
       loadUserServers();
-    }
-
-    // Export keys
-    async function exportKeys() {
-      const msg = document.getElementById('export-message');
-      try {
-        const result = await api('/api/export', { method: 'POST' });
-        msg.className = 'alert alert-success';
-        msg.textContent = `Exported keys to ${result.path} for ${result.serverCount} servers`;
-      } catch (e) {
-        msg.className = 'alert alert-error';
-        msg.textContent = e.message;
-      }
-      msg.classList.remove('hidden');
     }
 
     // Start app

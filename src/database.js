@@ -59,14 +59,6 @@ db.exec(`
     FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
   );
-
-  CREATE TABLE IF NOT EXISTS label_users (
-    label_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    PRIMARY KEY (label_id, user_id),
-    FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
 `);
 
 // Ensure superkey_admins group exists

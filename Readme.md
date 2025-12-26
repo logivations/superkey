@@ -1,25 +1,54 @@
-Superkey management tool
+# Superkey
 
-It has SSO with google
-each user can upload their public key
+SSH public key management tool with Google Workspace integration.
 
-Servers / devices can be managed: they can be tagged with labels
-each server can have mujltiple labels
+## Features
 
-Users can be added to groups - but this is synced from google groups. 
+- **Google SSO** - Users authenticate with Google accounts
+- **SSH Key Management** - Users upload their public SSH keys
+- **Server Management** - Servers tagged with labels, import from SSH config files
+- **Group Sync** - Users and groups synced from Google Workspace
+- **Access Control** - Assign groups to labels to control server access
+- **Admin Views** - See who has access to what
+- **Deployment** - Automated user provisioning on remote servers
 
-To manage access, one can add groups to labels (so which groups can access which labels)
-one can also add users directly to labels
+## Setup
 
-There is a view where a user can see to which servers they have access
+1. Copy `.env.example` to `.env` and configure:
+   - Google OAuth credentials
+   - Service account for Workspace sync (optional but recommended)
 
-There is an admin view where one can see this for each user (with a dropdown)
-and there is an admin view where one can see for a server, who has access to it (both by group, and by user individually)
+2. Install and run:
+   ```bash
+   npm install
+   npm start
+   ```
 
-admin is everyone who is in the group superkey_admins
+3. Access at `http://localhost:3000`
 
+## Deployment to Servers
 
-To deploy the settings to devices, it can export the key structure to a local folder, path configurable, default ~/hostnames/keys
-There, it creates a subfolder for each server/device, and puts all public keys in this folder that should have access.
+Set up the deploy user on each server (one-time):
+```bash
+./scripts/setup-server.sh <hostname> ~/.ssh/id_rsa.pub
+```
 
-There is a dockerfile to build and deploy the application
+Deploy SSH keys to all configured servers:
+```bash
+npm run deploy          # deploy to all servers
+npm run deploy:dry-run  # preview changes
+```
+
+## Docker
+
+```bash
+docker-compose up -d
+```
+
+## Access Model
+
+- Users belong to **groups** (synced from Google Workspace)
+- Servers are tagged with **labels**
+- Groups are assigned to labels
+- Users get access to servers via their group memberships
+- Admins are members of the `superkey_admins` group

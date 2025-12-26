@@ -22,7 +22,6 @@ RUN mkdir -p /data
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV DB_PATH=/data/superkey.db
-ENV EXPORT_PATH=/data/keys
 
 # Expose port
 EXPOSE 3000

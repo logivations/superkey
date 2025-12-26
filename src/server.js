@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
+const SqliteStore = require('better-sqlite3-session-store')(session);
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const { google } = require('googleapis');
@@ -10,42 +11,260 @@ const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const EXPORT_PATH = process.env.EXPORT_PATH || path.join(process.env.HOME, 'hostnames', 'keys');
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// Use SQLite for session storage (persists across restarts)
 app.use(session({
+  store: new SqliteStore({
+    client: db,
+    expired: {
+      clear: true,
+      intervalMs: 900000 // 15 min
+    }
+  }),
   secret: process.env.SESSION_SECRET || 'superkey-secret-change-in-production',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: process.env.NODE_ENV === 'production' }
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  }
 }));
 
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Sync user's Google Groups to local database
+// Service account auth for domain-wide group sync
+let serviceAccountAuth = null;
+
+function initServiceAccount() {
+  const keyPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  const adminEmail = process.env.GOOGLE_ADMIN_EMAIL;
+
+  if (keyPath && adminEmail && fs.existsSync(keyPath)) {
+    try {
+      const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+      serviceAccountAuth = new google.auth.JWT({
+        email: key.client_email,
+        key: key.private_key,
+        scopes: [
+          'https://www.googleapis.com/auth/admin.directory.user.readonly',
+          'https://www.googleapis.com/auth/admin.directory.group.readonly',
+          'https://www.googleapis.com/auth/admin.directory.group.member.readonly'
+        ],
+        subject: adminEmail // Impersonate admin user
+      });
+      console.log('Service account configured for group sync');
+      return true;
+    } catch (err) {
+      console.error('Failed to load service account:', err.message);
+    }
+  }
+  return false;
+}
+
+// Initialize service account on startup
+initServiceAccount();
+
+// Sync ALL users and groups from Google Workspace
+async function syncAllUsersGroups() {
+  if (!serviceAccountAuth) {
+    throw new Error('Service account not configured. Set GOOGLE_SERVICE_ACCOUNT_KEY and GOOGLE_ADMIN_EMAIL');
+  }
+
+  const admin = google.admin({ version: 'directory_v1', auth: serviceAccountAuth });
+
+  // Step 1: Fetch ALL users from Google Workspace
+  console.log('Fetching all users from Google Workspace...');
+  let allGoogleUsers = [];
+  let pageToken = null;
+
+  do {
+    try {
+      const response = await admin.users.list({
+        customer: 'my_customer',
+        maxResults: 500,
+        pageToken: pageToken,
+        showDeleted: 'false'
+      });
+
+      if (response.data.users) {
+        allGoogleUsers = allGoogleUsers.concat(response.data.users);
+      }
+      pageToken = response.data.nextPageToken;
+    } catch (err) {
+      console.error('Error fetching users:', err.message);
+      break;
+    }
+  } while (pageToken);
+
+  console.log(`Found ${allGoogleUsers.length} users in Google Workspace`);
+
+  // Get active users from Google
+  const activeGoogleUsers = allGoogleUsers.filter(u => !u.suspended);
+  const activeEmails = new Set(activeGoogleUsers.map(u => u.primaryEmail));
+
+  // Remove users that no longer exist or are suspended in Google
+  const localUsers = db.prepare('SELECT * FROM users').all();
+  let removedUsers = 0;
+  for (const localUser of localUsers) {
+    if (!activeEmails.has(localUser.email)) {
+      console.log(`  Removing inactive/deleted user: ${localUser.email}`);
+      db.prepare('DELETE FROM user_groups WHERE user_id = ?').run(localUser.id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(localUser.id);
+      removedUsers++;
+    }
+  }
+
+  // Create users from Google that don't exist locally
+  let createdUsers = 0;
+  for (const gUser of activeGoogleUsers) {
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(gUser.primaryEmail);
+    if (!existing) {
+      const fullName = gUser.name ? `${gUser.name.givenName || ''} ${gUser.name.familyName || ''}`.trim() : gUser.primaryEmail.split('@')[0];
+      db.prepare('INSERT INTO users (google_id, email, name) VALUES (?, ?, ?)').run(gUser.id, gUser.primaryEmail, fullName);
+      console.log(`  Created user: ${fullName} (${gUser.primaryEmail})`);
+      createdUsers++;
+    }
+  }
+
+  // Step 2: Fetch ALL groups from Google Workspace
+  console.log('Fetching all groups from Google Workspace...');
+  let allGoogleGroups = [];
+  pageToken = null;
+
+  do {
+    try {
+      const response = await admin.groups.list({
+        customer: 'my_customer',
+        maxResults: 200,
+        pageToken: pageToken
+      });
+
+      if (response.data.groups) {
+        allGoogleGroups = allGoogleGroups.concat(response.data.groups);
+      }
+      pageToken = response.data.nextPageToken;
+    } catch (err) {
+      console.error('Error fetching groups:', err.message);
+      break;
+    }
+  } while (pageToken);
+
+  console.log(`Found ${allGoogleGroups.length} groups in Google Workspace`);
+
+  // Get Google group emails
+  const googleGroupEmails = new Set(allGoogleGroups.map(g => g.email));
+
+  // Remove groups that no longer exist in Google (except those without google_group_email)
+  const localGroups = db.prepare("SELECT * FROM groups WHERE google_group_email IS NOT NULL AND google_group_email != ''").all();
+  let removedGroups = 0;
+  for (const localGroup of localGroups) {
+    if (!googleGroupEmails.has(localGroup.google_group_email)) {
+      console.log(`  Removing deleted group: ${localGroup.name} (${localGroup.google_group_email})`);
+      db.prepare('DELETE FROM user_groups WHERE group_id = ?').run(localGroup.id);
+      db.prepare('DELETE FROM label_groups WHERE group_id = ?').run(localGroup.id);
+      db.prepare('DELETE FROM groups WHERE id = ?').run(localGroup.id);
+      removedGroups++;
+    }
+  }
+
+  // Create/update groups in local database
+  let createdGroups = 0;
+  for (const gGroup of allGoogleGroups) {
+    const existing = db.prepare('SELECT id FROM groups WHERE google_group_email = ?').get(gGroup.email);
+    if (!existing) {
+      const displayName = gGroup.name || gGroup.email.split('@')[0];
+      db.prepare('INSERT INTO groups (name, google_group_email) VALUES (?, ?)').run(displayName, gGroup.email);
+      console.log(`  Created group: ${displayName} (${gGroup.email})`);
+      createdGroups++;
+    }
+  }
+
+  // Step 3: Sync user-group memberships (fetch members per group - much faster)
+  const groupsWithEmail = db.prepare("SELECT * FROM groups WHERE google_group_email IS NOT NULL AND google_group_email != ''").all();
+  const users = db.prepare('SELECT * FROM users').all();
+  const userEmailToId = new Map(users.map(u => [u.email.toLowerCase(), u.id]));
+
+  console.log(`Syncing memberships for ${groupsWithEmail.length} groups...`);
+
+  // Clear all user_groups and rebuild
+  db.prepare('DELETE FROM user_groups').run();
+
+  let syncCount = 0;
+  for (const group of groupsWithEmail) {
+    try {
+      // Fetch all members of this group at once
+      let allMembers = [];
+      let pageToken = null;
+
+      do {
+        const response = await admin.members.list({
+          groupKey: group.google_group_email,
+          maxResults: 200,
+          pageToken: pageToken
+        });
+
+        if (response.data.members) {
+          allMembers = allMembers.concat(response.data.members);
+        }
+        pageToken = response.data.nextPageToken;
+      } while (pageToken);
+
+      console.log(`  ${group.name}: ${allMembers.length} members`);
+
+      // Match members to local users
+      for (const member of allMembers) {
+        const userId = userEmailToId.get(member.email.toLowerCase());
+        if (userId) {
+          db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(userId, group.id);
+          syncCount++;
+        }
+      }
+    } catch (err) {
+      console.log(`  Error fetching members for ${group.google_group_email}: ${err.message}`);
+    }
+  }
+
+  console.log(`Sync complete: ${syncCount} memberships found`);
+  return {
+    googleUsers: allGoogleUsers.length,
+    googleGroups: allGoogleGroups.length,
+    users: users.length,
+    groups: groupsWithEmail.length,
+    memberships: syncCount,
+    removedUsers,
+    createdUsers,
+    removedGroups,
+    createdGroups
+  };
+}
+
+// Sync single user's groups (using service account if available, else OAuth token)
 async function syncUserGroups(userId, userEmail, accessToken) {
   try {
-    const oauth2Client = new google.auth.OAuth2();
-    oauth2Client.setCredentials({ access_token: accessToken });
+    let auth;
+    if (serviceAccountAuth) {
+      auth = serviceAccountAuth;
+    } else if (accessToken) {
+      const oauth2Client = new google.auth.OAuth2();
+      oauth2Client.setCredentials({ access_token: accessToken });
+      auth = oauth2Client;
+    } else {
+      console.log('No auth available for group sync');
+      return;
+    }
 
-    const people = google.people({ version: 'v1', auth: oauth2Client });
-
-    // Get user's memberships using Cloud Identity or check against configured groups
-    // Since we can't list all groups user belongs to without admin access,
-    // we'll check membership against each configured group
-
-    const groupsWithEmail = db.prepare('SELECT * FROM groups WHERE google_group_email IS NOT NULL').all();
+    const admin = google.admin({ version: 'directory_v1', auth });
+    const groupsWithEmail = db.prepare("SELECT * FROM groups WHERE google_group_email IS NOT NULL AND google_group_email != ''").all();
 
     // Clear existing group memberships for this user
     db.prepare('DELETE FROM user_groups WHERE user_id = ?').run(userId);
 
-    // For each group with a google_group_email, check if user is a member
     for (const group of groupsWithEmail) {
       try {
-        const admin = google.admin({ version: 'directory_v1', auth: oauth2Client });
         const response = await admin.members.hasMember({
           groupKey: group.google_group_email,
           memberKey: userEmail
@@ -56,11 +275,7 @@ async function syncUserGroups(userId, userEmail, accessToken) {
           console.log(`User ${userEmail} is member of ${group.google_group_email}`);
         }
       } catch (err) {
-        // If we get a 403, user doesn't have permission to check this group
-        // If 404, user is not a member
-        if (err.code === 404) {
-          // Not a member, that's fine
-        } else {
+        if (err.code !== 404) {
           console.log(`Could not check membership for ${group.google_group_email}: ${err.message}`);
         }
       }
@@ -137,11 +352,7 @@ function isAdmin(req, res, next) {
 
 // Auth routes
 app.get('/auth/google', passport.authenticate('google', {
-  scope: [
-    'profile',
-    'email',
-    'https://www.googleapis.com/auth/admin.directory.group.member.readonly'
-  ],
+  scope: ['profile', 'email'],
   accessType: 'offline',
   prompt: 'consent'
 }));
@@ -170,13 +381,23 @@ app.get('/api/me', isAuthenticated, (req, res) => {
 
   res.json({
     ...req.user,
-    accessToken: undefined, // Don't expose token
+    accessToken: undefined,
     isAdmin: !!adminGroup,
     groups: userGroups.map(g => g.name)
   });
 });
 
-// Manual group sync endpoint
+// Sync all users' groups (admin only)
+app.post('/api/sync-all-groups', isAdmin, async (req, res) => {
+  try {
+    const result = await syncAllUsersGroups();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sync current user's groups
 app.post('/api/sync-groups', isAuthenticated, async (req, res) => {
   try {
     await syncUserGroups(req.user.id, req.user.email, req.user.accessToken);
@@ -184,6 +405,15 @@ app.post('/api/sync-groups', isAuthenticated, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Service account status
+app.get('/api/service-account-status', isAdmin, (req, res) => {
+  res.json({
+    configured: !!serviceAccountAuth,
+    keyPath: process.env.GOOGLE_SERVICE_ACCOUNT_KEY || null,
+    adminEmail: process.env.GOOGLE_ADMIN_EMAIL || null
+  });
 });
 
 // User routes
@@ -202,6 +432,90 @@ app.get('/api/users/:id', isAdmin, (req, res) => {
   const user = db.prepare('SELECT id, email, name, public_key, created_at FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json(user);
+});
+
+// Import servers from SSH config files
+const SSH_CONFIGS_PATH = process.env.SSH_CONFIGS_PATH || path.join(process.env.HOME, 'hostnames', 'ssh-configs');
+
+function parseSSHConfig(content, configName) {
+  const servers = [];
+  const lines = content.split('\n');
+  let currentHost = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('Host ') && !trimmed.includes('*')) {
+      if (currentHost) {
+        currentHost.description = currentHost.ip ? `${currentHost.ip} (${configName})` : configName;
+        servers.push(currentHost);
+      }
+      currentHost = {
+        hostname: trimmed.substring(5).trim(),
+        label: configName,
+        ip: null
+      };
+    } else if (currentHost && trimmed.startsWith('HostName ')) {
+      currentHost.ip = trimmed.substring(9).trim();
+    }
+  }
+
+  if (currentHost) {
+    currentHost.description = currentHost.ip ? `${currentHost.ip} (${configName})` : configName;
+    servers.push(currentHost);
+  }
+
+  return servers;
+}
+
+app.post('/api/import-servers', isAdmin, (req, res) => {
+  try {
+    if (!fs.existsSync(SSH_CONFIGS_PATH)) {
+      return res.status(400).json({ error: `SSH configs directory not found: ${SSH_CONFIGS_PATH}` });
+    }
+
+    const configFiles = fs.readdirSync(SSH_CONFIGS_PATH).filter(f => f.endsWith('.config'));
+    let imported = 0;
+    let skipped = 0;
+
+    for (const configFile of configFiles) {
+      const configName = configFile.replace('.config', '');
+      const content = fs.readFileSync(path.join(SSH_CONFIGS_PATH, configFile), 'utf8');
+      const servers = parseSSHConfig(content, configName);
+
+      for (const server of servers) {
+        // Check if server already exists
+        const existing = db.prepare('SELECT id FROM servers WHERE hostname = ?').get(server.hostname);
+        if (existing) {
+          skipped++;
+          continue;
+        }
+
+        // Create the server
+        const result = db.prepare('INSERT INTO servers (hostname, description) VALUES (?, ?)').run(server.hostname, server.description);
+        const serverId = result.lastInsertRowid;
+
+        // Create or get the label
+        let label = db.prepare('SELECT id FROM labels WHERE name = ?').get(server.label);
+        if (!label) {
+          const labelResult = db.prepare('INSERT INTO labels (name) VALUES (?)').run(server.label);
+          label = { id: labelResult.lastInsertRowid };
+        }
+
+        // Link server to label
+        db.prepare('INSERT OR IGNORE INTO server_labels (server_id, label_id) VALUES (?, ?)').run(serverId, label.id);
+        imported++;
+      }
+    }
+
+    res.json({
+      success: true,
+      imported,
+      skipped,
+      configFiles: configFiles.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Server routes
@@ -321,7 +635,7 @@ app.delete('/api/groups/:id', isAdmin, (req, res) => {
   res.json({ success: true });
 });
 
-// User-Group management (read-only for Google-synced groups)
+// User-Group management (read-only, synced from Google)
 app.get('/api/groups/:groupId/users', isAuthenticated, (req, res) => {
   const users = db.prepare(`
     SELECT u.id, u.email, u.name FROM users u
@@ -355,41 +669,16 @@ app.get('/api/labels/:labelId/groups', isAuthenticated, (req, res) => {
   res.json(groups);
 });
 
-// Label-User direct access management
-app.post('/api/labels/:labelId/users/:userId', isAdmin, (req, res) => {
-  try {
-    db.prepare('INSERT OR IGNORE INTO label_users (label_id, user_id) VALUES (?, ?)').run(req.params.labelId, req.params.userId);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.delete('/api/labels/:labelId/users/:userId', isAdmin, (req, res) => {
-  db.prepare('DELETE FROM label_users WHERE label_id = ? AND user_id = ?').run(req.params.labelId, req.params.userId);
-  res.json({ success: true });
-});
-
-app.get('/api/labels/:labelId/users', isAuthenticated, (req, res) => {
-  const users = db.prepare(`
-    SELECT u.id, u.email, u.name FROM users u
-    JOIN label_users lu ON u.id = lu.user_id
-    WHERE lu.label_id = ?
-  `).all(req.params.labelId);
-  res.json(users);
-});
-
 // Access views
 app.get('/api/my-servers', isAuthenticated, (req, res) => {
   const servers = db.prepare(`
     SELECT DISTINCT s.* FROM servers s
     JOIN server_labels sl ON s.id = sl.server_id
     JOIN labels l ON sl.label_id = l.id
-    LEFT JOIN label_groups lg ON l.id = lg.label_id
-    LEFT JOIN user_groups ug ON lg.group_id = ug.group_id
-    LEFT JOIN label_users lu ON l.id = lu.label_id
-    WHERE ug.user_id = ? OR lu.user_id = ?
-  `).all(req.user.id, req.user.id);
+    JOIN label_groups lg ON l.id = lg.label_id
+    JOIN user_groups ug ON lg.group_id = ug.group_id
+    WHERE ug.user_id = ?
+  `).all(req.user.id);
   res.json(servers);
 });
 
@@ -398,16 +687,15 @@ app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
     SELECT DISTINCT s.* FROM servers s
     JOIN server_labels sl ON s.id = sl.server_id
     JOIN labels l ON sl.label_id = l.id
-    LEFT JOIN label_groups lg ON l.id = lg.label_id
-    LEFT JOIN user_groups ug ON lg.group_id = ug.group_id
-    LEFT JOIN label_users lu ON l.id = lu.label_id
-    WHERE ug.user_id = ? OR lu.user_id = ?
-  `).all(req.params.userId, req.params.userId);
+    JOIN label_groups lg ON l.id = lg.label_id
+    JOIN user_groups ug ON lg.group_id = ug.group_id
+    WHERE ug.user_id = ?
+  `).all(req.params.userId);
   res.json(servers);
 });
 
 app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
-  const byGroup = db.prepare(`
+  const users = db.prepare(`
     SELECT DISTINCT u.id, u.email, u.name, u.public_key, g.name as group_name FROM users u
     JOIN user_groups ug ON u.id = ug.user_id
     JOIN groups g ON ug.group_id = g.id
@@ -416,52 +704,37 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
     WHERE sl.server_id = ?
   `).all(req.params.serverId);
 
-  const byUser = db.prepare(`
-    SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
-    JOIN label_users lu ON u.id = lu.user_id
-    JOIN server_labels sl ON lu.label_id = sl.label_id
-    WHERE sl.server_id = ?
-  `).all(req.params.serverId);
-
-  res.json({ byGroup, byUser });
+  res.json({ users });
 });
 
-// Export keys
-app.post('/api/export', isAdmin, (req, res) => {
+// Deployment data - returns all servers with their authorized users
+// Used by the deploy.sh script to set up user access on remote servers
+app.get('/api/deploy-data', (req, res) => {
   try {
     const servers = db.prepare('SELECT * FROM servers').all();
+    const result = {
+      servers: servers.map(server => {
+        // Get all users with access to this server via group membership
+        const users = db.prepare(`
+          SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
+          JOIN user_groups ug ON u.id = ug.user_id
+          JOIN label_groups lg ON ug.group_id = lg.group_id
+          JOIN server_labels sl ON lg.label_id = sl.label_id
+          WHERE sl.server_id = ?
+        `).all(server.id);
 
-    // Create export directory if it doesn't exist
-    fs.mkdirSync(EXPORT_PATH, { recursive: true });
-
-    for (const server of servers) {
-      const serverPath = path.join(EXPORT_PATH, server.hostname);
-      fs.mkdirSync(serverPath, { recursive: true });
-
-      // Get all users with access to this server
-      const users = db.prepare(`
-        SELECT DISTINCT u.email, u.public_key FROM users u
-        LEFT JOIN user_groups ug ON u.id = ug.user_id
-        LEFT JOIN label_groups lg ON ug.group_id = lg.group_id
-        LEFT JOIN label_users lu ON u.id = lu.user_id
-        JOIN server_labels sl ON (lg.label_id = sl.label_id OR lu.label_id = sl.label_id)
-        WHERE sl.server_id = ? AND u.public_key IS NOT NULL AND u.public_key != ''
-      `).all(server.id);
-
-      // Clear existing keys
-      const existingFiles = fs.readdirSync(serverPath);
-      for (const file of existingFiles) {
-        fs.unlinkSync(path.join(serverPath, file));
-      }
-
-      // Write each user's public key
-      for (const user of users) {
-        const keyFilename = user.email.replace(/[^a-zA-Z0-9]/g, '_') + '.pub';
-        fs.writeFileSync(path.join(serverPath, keyFilename), user.public_key);
-      }
-    }
-
-    res.json({ success: true, path: EXPORT_PATH, serverCount: servers.length });
+        return {
+          hostname: server.hostname,
+          description: server.description,
+          users: users.map(u => ({
+            email: u.email,
+            name: u.name,
+            public_key: u.public_key
+          }))
+        };
+      })
+    };
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -474,4 +747,9 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Superkey server running on port ${PORT}`);
+  if (serviceAccountAuth) {
+    console.log('Google Workspace group sync enabled via service account');
+  } else {
+    console.log('Note: Set GOOGLE_SERVICE_ACCOUNT_KEY and GOOGLE_ADMIN_EMAIL for full group sync');
+  }
 });
