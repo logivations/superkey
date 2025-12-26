@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  superkey:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - superkey-data:/data
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL:-http://localhost:3000/auth/google/callback}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - NODE_ENV=production
+    restart: unless-stopped
+
+volumes:
+  superkey-data:
