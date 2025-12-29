@@ -40,6 +40,8 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostname TEXT UNIQUE NOT NULL,
     description TEXT,
+    last_deployed_at DATETIME,
+    deployed_keys_hash TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -60,6 +62,14 @@ db.exec(`
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
   );
 `);
+
+// Migrations for existing databases
+try {
+  db.exec(`ALTER TABLE servers ADD COLUMN last_deployed_at DATETIME`);
+} catch (e) { /* Column already exists */ }
+try {
+  db.exec(`ALTER TABLE servers ADD COLUMN deployed_keys_hash TEXT`);
+} catch (e) { /* Column already exists */ }
 
 // Ensure superkey_admins group exists
 db.prepare(`INSERT OR IGNORE INTO groups (name) VALUES ('superkey_admins')`).run();

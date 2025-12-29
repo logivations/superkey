@@ -5,9 +5,25 @@ const SqliteStore = require('better-sqlite3-session-store')(session);
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const { google } = require('googleapis');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const archiver = require('archiver');
 const db = require('./database');
+
+// Compute hash of users/keys for a server to detect if deployment is up-to-date
+function computeServerKeysHash(serverId) {
+  const users = db.prepare(`
+    SELECT DISTINCT u.email, u.public_key FROM users u
+    JOIN user_groups ug ON u.id = ug.user_id
+    JOIN label_groups lg ON ug.group_id = lg.group_id
+    JOIN server_labels sl ON lg.label_id = sl.label_id
+    WHERE sl.server_id = ? AND u.public_key IS NOT NULL AND u.public_key != ''
+    ORDER BY u.email
+  `).all(serverId);
+  const data = users.map(u => `${u.email}:${u.public_key}`).join('\n');
+  return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -527,7 +543,16 @@ app.get('/api/servers', isAuthenticated, (req, res) => {
     LEFT JOIN labels l ON sl.label_id = l.id
     GROUP BY s.id
   `).all();
-  res.json(servers.map(s => ({ ...s, labels: s.labels ? s.labels.split(',') : [] })));
+  res.json(servers.map(s => {
+    const expectedHash = computeServerKeysHash(s.id);
+    const isUpToDate = s.deployed_keys_hash === expectedHash;
+    return {
+      ...s,
+      labels: s.labels ? s.labels.split(',') : [],
+      expected_keys_hash: expectedHash,
+      is_up_to_date: isUpToDate
+    };
+  }));
 });
 
 app.post('/api/servers', isAdmin, (req, res) => {
@@ -577,6 +602,26 @@ app.put('/api/servers/:id', isAdmin, (req, res) => {
 app.delete('/api/servers/:id', isAdmin, (req, res) => {
   db.prepare('DELETE FROM servers WHERE id = ?').run(req.params.id);
   res.json({ success: true });
+});
+
+// Report deployment status (called by deploy script)
+app.post('/api/servers/:hostname/deployed', (req, res) => {
+  const { keys_hash } = req.body;
+  const { hostname } = req.params;
+  try {
+    const result = db.prepare(`
+      UPDATE servers
+      SET last_deployed_at = datetime('now'), deployed_keys_hash = ?
+      WHERE hostname = ?
+    `).run(keys_hash, hostname);
+    if (result.changes === 0) {
+      res.status(404).json({ error: 'Server not found' });
+    } else {
+      res.json({ success: true });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Label routes
@@ -707,6 +752,116 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
   res.json({ users });
 });
 
+// Download manual setup package for a server (for unreachable/air-gapped servers)
+app.get('/api/servers/:id/download-setup', isAdmin, (req, res) => {
+  try {
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(req.params.id);
+    if (!server) {
+      return res.status(404).json({ error: 'Server not found' });
+    }
+
+    // Get all users with access to this server via group membership
+    const users = db.prepare(`
+      SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
+      JOIN user_groups ug ON u.id = ug.user_id
+      JOIN label_groups lg ON ug.group_id = lg.group_id
+      JOIN server_labels sl ON lg.label_id = sl.label_id
+      WHERE sl.server_id = ?
+    `).all(req.params.id);
+
+    if (users.length === 0) {
+      return res.status(400).json({ error: 'No users have access to this server. Assign groups to this server\'s labels first.' });
+    }
+
+    // Filter to users with public keys
+    const usersWithKeys = users.filter(u => u.public_key && u.public_key.trim());
+    if (usersWithKeys.length === 0) {
+      return res.status(400).json({ error: 'No authorized users have SSH public keys configured.' });
+    }
+
+    // Generate authorized_keys content
+    const authorizedKeys = usersWithKeys
+      .map(u => u.public_key.trim())
+      .join('\n') + '\n';
+
+    // Generate README
+    const timestamp = new Date().toISOString();
+    const userList = usersWithKeys
+      .map(u => `  - ${u.name || u.email} (${u.email})`)
+      .join('\n');
+
+    const readme = `# Superkey Manual Setup for ${server.hostname}
+
+Generated: ${timestamp}
+
+## Overview
+
+This package contains the authorized_keys file for users who have access to
+the server "${server.hostname}".
+
+Use this when the server cannot be reached from the Superkey server
+(e.g., air-gapped networks, firewalls, VPNs).
+
+## Authorized Users (${usersWithKeys.length})
+
+${userList}
+
+## Setup Instructions
+
+1. Copy this package to the target server
+
+2. Extract the archive:
+   \`\`\`bash
+   tar -xzf superkey-setup-${server.hostname}.tar.gz
+   \`\`\`
+
+3. Copy the authorized_keys file to your shared user's SSH directory:
+   \`\`\`bash
+   # Replace <username> with your shared user (e.g., logi, ubuntu, deploy)
+   sudo cp authorized_keys /home/<username>/.ssh/authorized_keys
+   sudo chmod 600 /home/<username>/.ssh/authorized_keys
+   sudo chown <username>:<username> /home/<username>/.ssh/authorized_keys
+   \`\`\`
+
+   Or append to existing keys:
+   \`\`\`bash
+   sudo cat authorized_keys >> /home/<username>/.ssh/authorized_keys
+   \`\`\`
+
+## Updating Access
+
+When user access changes in Superkey, download a new package and replace
+the authorized_keys file on the server.
+
+## Notes
+
+- This file contains ${usersWithKeys.length} public key(s)
+- ${users.length - usersWithKeys.length} authorized user(s) have not uploaded their SSH public key
+`;
+
+    // Create tarball
+    const folderName = `superkey-setup-${server.hostname}`;
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Disposition', `attachment; filename="${folderName}.tar.gz"`);
+
+    const archive = archiver('tar', { gzip: true });
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      res.status(500).end();
+    });
+    archive.pipe(res);
+
+    archive.append(authorizedKeys, { name: `${folderName}/authorized_keys`, mode: 0o644 });
+    archive.append(readme, { name: `${folderName}/README.md`, mode: 0o644 });
+
+    archive.finalize();
+
+  } catch (err) {
+    console.error('Error generating setup package:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Deployment data - returns all servers with their authorized users
 // Used by the deploy.sh script to set up user access on remote servers
 app.get('/api/deploy-data', (req, res) => {
@@ -726,6 +881,7 @@ app.get('/api/deploy-data', (req, res) => {
         return {
           hostname: server.hostname,
           description: server.description,
+          expected_keys_hash: computeServerKeysHash(server.id),
           users: users.map(u => ({
             email: u.email,
             name: u.name,

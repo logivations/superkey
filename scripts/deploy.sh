@@ -184,6 +184,11 @@ if ! getent group logi &>/dev/null; then
     sudo -n groupadd logi 2>/dev/null || true
 fi
 
+# Ensure docker group exists
+if ! getent group docker &>/dev/null; then
+    sudo -n groupadd docker 2>/dev/null || true
+fi
+
 # Create user if doesn't exist
 if ! id "\$USERNAME" &>/dev/null; then
     echo "      Creating user \$USERNAME..."
@@ -209,6 +214,12 @@ if ! id -nG "\$USERNAME" | grep -qw "logi"; then
     sudo -n usermod -aG logi "\$USERNAME" || echo "      Warning: Could not add to logi group"
 fi
 
+# Add user to docker group (allows docker without sudo)
+if ! id -nG "\$USERNAME" | grep -qw "docker"; then
+    echo "      Adding \$USERNAME to docker group..."
+    sudo -n usermod -aG docker "\$USERNAME" || echo "      Warning: Could not add to docker group"
+fi
+
 # Set up SSH directory and authorized_keys
 USER_HOME=\$(getent passwd "\$USERNAME" | cut -d: -f6)
 if [ -z "\$USER_HOME" ]; then
@@ -227,6 +238,17 @@ echo "\$PUBLIC_KEY" | sudo -n tee "\$AUTH_KEYS" > /dev/null
 sudo -n chmod 600 "\$AUTH_KEYS"
 sudo -n chown -R "\$USERNAME:\$USERNAME" "\$SSH_DIR"
 
+# Add source line to .bashrc if not already present
+BASHRC="\$USER_HOME/.bashrc"
+SOURCE_LINE="source /home/logi/deploy/linux/setup.bash"
+if sudo -n test -f "/home/logi/deploy/linux/setup.bash"; then
+    if ! sudo -n grep -qF "\$SOURCE_LINE" "\$BASHRC" 2>/dev/null; then
+        echo "      Adding setup.bash to .bashrc..."
+        echo "\$SOURCE_LINE" | sudo -n tee -a "\$BASHRC" > /dev/null
+        sudo -n chown "\$USERNAME:\$USERNAME" "\$BASHRC"
+    fi
+fi
+
 echo "      Done setting up \$USERNAME"
 EOF
 )
@@ -236,6 +258,23 @@ EOF
     done
 
     echo "  Completed processing $HOSTNAME"
+
+    # Report deployment status to API
+    if [ "$DRY_RUN" = false ]; then
+        # Use the expected hash from the API (computed server-side for consistency)
+        KEYS_HASH=$(echo "$server" | jq -r '.expected_keys_hash')
+
+        echo "  Reporting deployment status to API (hash: $KEYS_HASH)..."
+        REPORT_RESULT=$(curl -s -X POST "${SUPERKEY_URL}/api/servers/${HOSTNAME}/deployed" \
+            -H "Content-Type: application/json" \
+            -d "{\"keys_hash\": \"$KEYS_HASH\"}")
+
+        if echo "$REPORT_RESULT" | jq -e '.success' &>/dev/null; then
+            echo "  Deployment status recorded successfully"
+        else
+            echo "  Warning: Failed to record deployment status: $REPORT_RESULT"
+        fi
+    fi
 done
 
 echo ""
