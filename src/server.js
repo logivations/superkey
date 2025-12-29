@@ -604,6 +604,26 @@ app.delete('/api/servers/:id', isAdmin, (req, res) => {
   res.json({ success: true });
 });
 
+// Add label to server
+app.post('/api/servers/:serverId/labels/:labelId', isAdmin, (req, res) => {
+  try {
+    db.prepare('INSERT OR IGNORE INTO server_labels (server_id, label_id) VALUES (?, ?)').run(req.params.serverId, req.params.labelId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove label from server
+app.delete('/api/servers/:serverId/labels/:labelId', isAdmin, (req, res) => {
+  try {
+    db.prepare('DELETE FROM server_labels WHERE server_id = ? AND label_id = ?').run(req.params.serverId, req.params.labelId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Report deployment status (called by deploy script)
 app.post('/api/servers/:hostname/deployed', (req, res) => {
   const { keys_hash } = req.body;
@@ -724,7 +744,15 @@ app.get('/api/my-servers', isAuthenticated, (req, res) => {
     JOIN user_groups ug ON lg.group_id = ug.group_id
     WHERE ug.user_id = ?
   `).all(req.user.id);
-  res.json(servers);
+  res.json(servers.map(s => {
+    const expectedHash = computeServerKeysHash(s.id);
+    const isUpToDate = s.deployed_keys_hash === expectedHash;
+    return {
+      ...s,
+      expected_keys_hash: expectedHash,
+      is_up_to_date: isUpToDate
+    };
+  }));
 });
 
 app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
@@ -736,7 +764,15 @@ app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
     JOIN user_groups ug ON lg.group_id = ug.group_id
     WHERE ug.user_id = ?
   `).all(req.params.userId);
-  res.json(servers);
+  res.json(servers.map(s => {
+    const expectedHash = computeServerKeysHash(s.id);
+    const isUpToDate = s.deployed_keys_hash === expectedHash;
+    return {
+      ...s,
+      expected_keys_hash: expectedHash,
+      is_up_to_date: isUpToDate
+    };
+  }));
 });
 
 app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
@@ -858,6 +894,34 @@ the authorized_keys file on the server.
 
   } catch (err) {
     console.error('Error generating setup package:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get admin public keys for setup script (no auth required)
+// Returns public keys of all users in superkey_admins group
+app.get('/api/admin-keys', (req, res) => {
+  try {
+    const adminGroup = db.prepare("SELECT id FROM groups WHERE name = 'superkey_admins'").get();
+    if (!adminGroup) {
+      return res.status(404).json({ error: 'superkey_admins group not found' });
+    }
+
+    const users = db.prepare(`
+      SELECT u.email, u.name, u.public_key FROM users u
+      JOIN user_groups ug ON u.id = ug.user_id
+      WHERE ug.group_id = ? AND u.public_key IS NOT NULL AND u.public_key != ''
+    `).all(adminGroup.id);
+
+    res.json({
+      group: 'superkey_admins',
+      users: users.map(u => ({
+        email: u.email,
+        name: u.name,
+        public_key: u.public_key
+      }))
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

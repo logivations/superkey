@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Superkey - SSH Key Management</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔑</text></svg>">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
@@ -78,6 +79,7 @@
         <h1>Superkey</h1>
         <p style="margin-bottom: 20px; color: #666;">SSH Key Management Tool</p>
         <a href="/auth/google" class="btn btn-primary">Sign in with Google</a>
+        <p style="margin-top: 20px;"><a href="https://coda.io/d/_dFse1sx3aih/Superkey_su1T4vqT" target="_blank" style="color: #666; font-size: 0.9rem;">Documentation</a></p>
       </div>
     </div>
 
@@ -139,7 +141,7 @@
               <p style="margin-bottom: 10px; color: #666;">Run the following command in your terminal:</p>
 
               <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 15px; font-family: monospace; font-size: 0.9rem;">
-                ssh-keygen -t ed25519 -C "your_email@example.com"
+                ssh-keygen -t ed25519 -C "your_email@lvairo.com"
               </div>
 
               <p style="margin-bottom: 10px; color: #666;">Then press Enter to accept the default location, and optionally set a passphrase.</p>
@@ -159,7 +161,7 @@
             <h2>Servers I Have Access To</h2>
             <table>
               <thead>
-                <tr><th>Hostname</th><th>Description</th></tr>
+                <tr><th>Hostname</th><th>Description</th><th>Sync Status</th></tr>
               </thead>
               <tbody id="my-servers-list"></tbody>
             </table>
@@ -244,7 +246,7 @@
             </div>
             <table id="admin-user-servers" class="hidden">
               <thead>
-                <tr><th>Hostname</th><th>Description</th></tr>
+                <tr><th>Hostname</th><th>Description</th><th>Sync Status</th></tr>
               </thead>
               <tbody id="admin-user-servers-list"></tbody>
             </table>
@@ -274,29 +276,32 @@
     </div>
   </div>
 
-  <!-- Add Server Modal -->
+  <!-- Manage Server Labels Modal -->
   <div id="server-modal" class="modal hidden">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 id="server-modal-title">Add Server</h3>
+        <h3>Manage Server Labels</h3>
         <span class="modal-close" onclick="closeModal('server-modal')">&times;</span>
       </div>
-      <form onsubmit="saveServer(event)">
-        <input type="hidden" id="server-id">
-        <div class="form-group">
-          <label>Hostname</label>
-          <input type="text" id="server-hostname" required>
+      <input type="hidden" id="server-id">
+      <div class="form-group">
+        <label>Hostname</label>
+        <div style="padding: 10px; background: #f5f5f5; border-radius: 4px; font-family: monospace;" id="server-hostname-display"></div>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <div style="padding: 10px; background: #f5f5f5; border-radius: 4px; color: #666;" id="server-description-display">-</div>
+      </div>
+      <div class="access-section">
+        <h4>Labels</h4>
+        <div class="flex-row" style="margin-bottom: 10px;">
+          <select id="add-label-to-server">
+            <option value="">-- Add Label --</option>
+          </select>
+          <button class="btn btn-small btn-primary" onclick="addLabelToServer()">Add</button>
         </div>
-        <div class="form-group">
-          <label>Description</label>
-          <input type="text" id="server-description">
-        </div>
-        <div class="form-group">
-          <label>Labels (comma-separated)</label>
-          <input type="text" id="server-labels" placeholder="production, web, frontend">
-        </div>
-        <button type="submit" class="btn btn-primary">Save</button>
-      </form>
+        <div id="server-labels-list"></div>
+      </div>
     </div>
   </div>
 
@@ -446,9 +451,17 @@
     async function loadMyServers() {
       const servers = await api('/api/my-servers');
       const list = document.getElementById('my-servers-list');
-      list.innerHTML = servers.length ? servers.map(s => `
-        <tr><td>${s.hostname}</td><td>${s.description || '-'}</td></tr>
-      `).join('') : '<tr><td colspan="2">No servers accessible</td></tr>';
+      list.innerHTML = servers.length ? servers.map(s => {
+        let syncStatus;
+        if (!s.last_deployed_at) {
+          syncStatus = '<div class="sync-status"><span class="dot dot-gray"></span> Never deployed</div>';
+        } else if (s.is_up_to_date) {
+          syncStatus = '<div class="sync-status"><span class="dot dot-green"></span> Up to date</div>';
+        } else {
+          syncStatus = '<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync</div>';
+        }
+        return `<tr><td>${s.hostname}</td><td>${s.description || '-'}</td><td>${syncStatus}</td></tr>`;
+      }).join('') : '<tr><td colspan="3">No servers accessible</td></tr>';
     }
 
     // Load all data (admin)
@@ -482,12 +495,11 @@
           <tr>
             <td>${s.hostname}</td>
             <td>${s.description || '-'}</td>
-            <td>${s.labels.map(l => `<span class="tag">${l}</span>`).join('')}</td>
+            <td>${s.labels.map(l => `<span class="tag">${l}</span>`).join('') || '<span style="color:#999">No labels</span>'}</td>
             <td>${syncStatus}</td>
             <td>
-              <button class="btn btn-small btn-secondary" onclick="editServer(${s.id})">Edit</button>
-              <button class="btn btn-small btn-secondary" onclick="downloadServerSetup(${s.id}, '${s.hostname}')" title="Download setup package for manual deployment">Download</button>
-              <button class="btn btn-small btn-danger" onclick="deleteServer(${s.id})">Delete</button>
+              <button class="btn btn-small btn-secondary" onclick="manageServerLabels(${s.id})">Labels</button>
+              <button class="btn btn-small btn-secondary" onclick="downloadServerSetup(${s.id}, '${s.hostname}')" title="Download setup package for manual deployment">&#8595;</button>
             </td>
           </tr>
         `;
@@ -570,53 +582,44 @@
       }
     }
 
-    function showAddServerModal() {
-      document.getElementById('server-modal-title').textContent = 'Add Server';
-      document.getElementById('server-id').value = '';
-      document.getElementById('server-hostname').value = '';
-      document.getElementById('server-description').value = '';
-      document.getElementById('server-labels').value = '';
+    async function manageServerLabels(serverId) {
+      const server = allServers.find(s => s.id === serverId);
+      document.getElementById('server-id').value = serverId;
+      document.getElementById('server-hostname-display').textContent = server.hostname;
+      document.getElementById('server-description-display').textContent = server.description || '-';
+
+      // Populate dropdown with labels not already assigned
+      const availableLabels = allLabels.filter(l => !server.labels.includes(l.name));
+      document.getElementById('add-label-to-server').innerHTML = '<option value="">-- Add Label --</option>' +
+        availableLabels.map(l => `<option value="${l.id}">${l.name}</option>`).join('');
+
+      // Show current labels with remove buttons
+      document.getElementById('server-labels-list').innerHTML = server.labels.length
+        ? server.labels.map(labelName => {
+            const label = allLabels.find(l => l.name === labelName);
+            return label ? `<span class="tag">${labelName} <span style="cursor:pointer" onclick="removeLabelFromServer(${serverId}, ${label.id})">×</span></span>` : '';
+          }).join('')
+        : '<span style="color:#999">No labels assigned</span>';
+
       document.getElementById('server-modal').classList.remove('hidden');
     }
 
-    function editServer(id) {
-      const server = allServers.find(s => s.id === id);
-      document.getElementById('server-modal-title').textContent = 'Edit Server';
-      document.getElementById('server-id').value = id;
-      document.getElementById('server-hostname').value = server.hostname;
-      document.getElementById('server-description').value = server.description || '';
-      document.getElementById('server-labels').value = server.labels.join(', ');
-      document.getElementById('server-modal').classList.remove('hidden');
-    }
-
-    async function saveServer(e) {
-      e.preventDefault();
-      const id = document.getElementById('server-id').value;
-      const data = {
-        hostname: document.getElementById('server-hostname').value,
-        description: document.getElementById('server-description').value,
-        labels: document.getElementById('server-labels').value.split(',').map(s => s.trim()).filter(Boolean)
-      };
-      if (id) {
-        await api(`/api/servers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-      } else {
-        await api('/api/servers', { method: 'POST', body: JSON.stringify(data) });
-      }
-      closeModal('server-modal');
-      allServers = await api('/api/servers');
-      allLabels = await api('/api/labels');
-      renderServers();
-      renderLabels();
-      populateAdminSelects();
-    }
-
-    async function deleteServer(id) {
-      if (confirm('Delete this server?')) {
-        await api(`/api/servers/${id}`, { method: 'DELETE' });
+    async function addLabelToServer() {
+      const serverId = document.getElementById('server-id').value;
+      const labelId = document.getElementById('add-label-to-server').value;
+      if (labelId) {
+        await api(`/api/servers/${serverId}/labels/${labelId}`, { method: 'POST' });
         allServers = await api('/api/servers');
         renderServers();
-        populateAdminSelects();
+        manageServerLabels(parseInt(serverId));
       }
+    }
+
+    async function removeLabelFromServer(serverId, labelId) {
+      await api(`/api/servers/${serverId}/labels/${labelId}`, { method: 'DELETE' });
+      allServers = await api('/api/servers');
+      renderServers();
+      manageServerLabels(serverId);
     }
 
     async function downloadServerSetup(serverId, hostname) {
@@ -735,9 +738,17 @@
         return;
       }
       const servers = await api(`/api/user-servers/${userId}`);
-      document.getElementById('admin-user-servers-list').innerHTML = servers.map(s => `
-        <tr><td>${s.hostname}</td><td>${s.description || '-'}</td></tr>
-      `).join('') || '<tr><td colspan="2">No servers accessible</td></tr>';
+      document.getElementById('admin-user-servers-list').innerHTML = servers.length ? servers.map(s => {
+        let syncStatus;
+        if (!s.last_deployed_at) {
+          syncStatus = '<div class="sync-status"><span class="dot dot-gray"></span> Never deployed</div>';
+        } else if (s.is_up_to_date) {
+          syncStatus = '<div class="sync-status"><span class="dot dot-green"></span> Up to date</div>';
+        } else {
+          syncStatus = '<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync</div>';
+        }
+        return `<tr><td>${s.hostname}</td><td>${s.description || '-'}</td><td>${syncStatus}</td></tr>`;
+      }).join('') : '<tr><td colspan="3">No servers accessible</td></tr>';
       document.getElementById('admin-user-servers').classList.remove('hidden');
     }
 

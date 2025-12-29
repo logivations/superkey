@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - superkey-data:/data
+      - ./data:/data
     environment:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
@@ -14,6 +14,3 @@ services:
       - SESSION_SECRET=${SESSION_SECRET}
       - NODE_ENV=production
     restart: unless-stopped
-
-volumes:
-  superkey-data:

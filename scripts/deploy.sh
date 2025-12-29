@@ -84,7 +84,7 @@ echo "$SERVERS_DATA" | jq -c '.servers[]' | while read -r server; do
     # Test SSH connection (use DEPLOY_USER)
     SSH_TARGET="$DEPLOY_USER@$HOSTNAME"
     echo "  Testing SSH connection to $SSH_TARGET..."
-    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$SSH_TARGET" "echo 'SSH OK'" 2>/dev/null; then
+    if ! ssh -n -o ConnectTimeout=5 -o BatchMode=yes "$SSH_TARGET" "echo 'SSH OK'" 2>/dev/null; then
         echo "  ERROR: Cannot connect to $SSH_TARGET via SSH, skipping..."
         echo "  Run: ./scripts/setup-server.sh $HOSTNAME to configure"
         continue
@@ -135,7 +135,7 @@ REVOKE_EOF
     if [ "$DRY_RUN" = true ]; then
         echo "    [DRY RUN] Would check and revoke unauthorized users"
     else
-        echo "$REVOKE_SCRIPT" | ssh "$SSH_TARGET" "bash -s '$AUTHORIZED_USERS'"
+        ssh "$SSH_TARGET" "bash -s '$AUTHORIZED_USERS'" <<< "$REVOKE_SCRIPT"
     fi
 
     # Process each user
@@ -253,7 +253,7 @@ echo "      Done setting up \$USERNAME"
 EOF
 )
             # Execute the script on the remote server
-            echo "$REMOTE_SCRIPT" | ssh "$SSH_TARGET" "bash -s"
+            ssh "$SSH_TARGET" "bash -s" <<< "$REMOTE_SCRIPT"
         fi
     done
 

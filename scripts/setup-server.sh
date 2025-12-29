@@ -64,54 +64,22 @@ echo "Superkey:    $SUPERKEY_URL"
 echo "Deploy user: $DEPLOY_USER"
 echo ""
 
-# Fetch superkey_admins group ID
-echo "Fetching superkey_admins group from Superkey API..."
-GROUPS_DATA=$(curl -sf "${SUPERKEY_URL}/api/groups" 2>/dev/null) || {
+# Fetch admin public keys from Superkey API
+echo "Fetching admin public keys from Superkey API..."
+ADMIN_DATA=$(curl -sf "${SUPERKEY_URL}/api/admin-keys" 2>/dev/null) || {
     echo "Error: Could not connect to Superkey API at ${SUPERKEY_URL}"
     echo "Make sure Superkey is running and accessible."
     exit 1
 }
 
-ADMIN_GROUP_ID=$(echo "$GROUPS_DATA" | jq -r '.[] | select(.name == "superkey_admins") | .id')
-
-if [ -z "$ADMIN_GROUP_ID" ] || [ "$ADMIN_GROUP_ID" = "null" ]; then
-    echo "Error: superkey_admins group not found in Superkey"
-    echo "Make sure the group exists and has been synced from Google Workspace."
+# Check for errors
+if echo "$ADMIN_DATA" | jq -e '.error' &>/dev/null; then
+    echo "Error: $(echo "$ADMIN_DATA" | jq -r '.error')"
     exit 1
 fi
 
-echo "Found superkey_admins group (ID: $ADMIN_GROUP_ID)"
-
-# Fetch users in the superkey_admins group
-echo "Fetching admin users..."
-ADMIN_USERS=$(curl -sf "${SUPERKEY_URL}/api/groups/${ADMIN_GROUP_ID}/users" 2>/dev/null) || {
-    echo "Error: Could not fetch admin users"
-    exit 1
-}
-
-# Get users with public keys
-echo "Collecting public keys from admin users..."
-PUBLIC_KEYS=""
-KEY_COUNT=0
-
-while IFS= read -r user; do
-    EMAIL=$(echo "$user" | jq -r '.email')
-
-    # Fetch full user details to get public key
-    USER_ID=$(echo "$user" | jq -r '.id')
-    USER_DATA=$(curl -sf "${SUPERKEY_URL}/api/users/${USER_ID}" 2>/dev/null) || continue
-
-    USER_KEY=$(echo "$USER_DATA" | jq -r '.public_key // empty')
-
-    if [ -n "$USER_KEY" ]; then
-        echo "  - $EMAIL (has public key)"
-        PUBLIC_KEYS="${PUBLIC_KEYS}${USER_KEY}
-"
-        KEY_COUNT=$((KEY_COUNT + 1))
-    else
-        echo "  - $EMAIL (no public key - skipping)"
-    fi
-done < <(echo "$ADMIN_USERS" | jq -c '.[]')
+# Get users and their public keys
+KEY_COUNT=$(echo "$ADMIN_DATA" | jq '.users | length')
 
 if [ "$KEY_COUNT" -eq 0 ]; then
     echo ""
@@ -120,8 +88,12 @@ if [ "$KEY_COUNT" -eq 0 ]; then
     exit 1
 fi
 
-echo ""
-echo "Found $KEY_COUNT public key(s) to add"
+echo "Found $KEY_COUNT admin(s) with public keys:"
+echo "$ADMIN_DATA" | jq -r '.users[] | "  - \(.email)"'
+
+# Collect all public keys
+PUBLIC_KEYS=$(echo "$ADMIN_DATA" | jq -r '.users[].public_key')
+
 echo ""
 
 # Prompt for sudo password
