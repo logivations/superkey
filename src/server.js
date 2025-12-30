@@ -190,12 +190,20 @@ async function syncAllUsersGroups() {
   // Create/update groups in local database
   let createdGroups = 0;
   for (const gGroup of allGoogleGroups) {
-    const existing = db.prepare('SELECT id FROM groups WHERE google_group_email = ?').get(gGroup.email);
-    if (!existing) {
-      const displayName = gGroup.name || gGroup.email.split('@')[0];
-      db.prepare('INSERT INTO groups (name, google_group_email) VALUES (?, ?)').run(displayName, gGroup.email);
-      console.log(`  Created group: ${displayName} (${gGroup.email})`);
-      createdGroups++;
+    const existingByEmail = db.prepare('SELECT id FROM groups WHERE google_group_email = ?').get(gGroup.email);
+    const displayName = gGroup.name || gGroup.email.split('@')[0];
+
+    if (!existingByEmail) {
+      // Check if group with same name exists (update its email) or create new
+      const existingByName = db.prepare('SELECT id FROM groups WHERE name = ?').get(displayName);
+      if (existingByName) {
+        db.prepare('UPDATE groups SET google_group_email = ? WHERE id = ?').run(gGroup.email, existingByName.id);
+        console.log(`  Updated group: ${displayName} (${gGroup.email})`);
+      } else {
+        db.prepare('INSERT INTO groups (name, google_group_email) VALUES (?, ?)').run(displayName, gGroup.email);
+        console.log(`  Created group: ${displayName} (${gGroup.email})`);
+        createdGroups++;
+      }
     }
   }
 
