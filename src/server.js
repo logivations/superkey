@@ -970,10 +970,11 @@ app.listen(PORT, async () => {
   if (serviceAccountAuth) {
     console.log('Google Workspace group sync enabled via service account');
 
-    // Auto-sync on first startup if no groups exist
+    // Auto-sync on first startup if no groups exist or no memberships
     const groupCount = db.prepare('SELECT COUNT(*) as count FROM groups').get().count;
-    if (groupCount === 0) {
-      console.log('No groups found - running initial sync from Google Workspace...');
+    const membershipCount = db.prepare('SELECT COUNT(*) as count FROM user_groups').get().count;
+    if (groupCount === 0 || membershipCount === 0) {
+      console.log('No groups or memberships found - running initial sync from Google Workspace...');
       try {
         const result = await syncAllUsersGroups();
         console.log(`Initial sync complete: ${result.users} users, ${result.groups} groups, ${result.memberships} memberships`);
