@@ -965,10 +965,22 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Superkey server running on port ${PORT}`);
   if (serviceAccountAuth) {
     console.log('Google Workspace group sync enabled via service account');
+
+    // Auto-sync on first startup if no groups exist
+    const groupCount = db.prepare('SELECT COUNT(*) as count FROM groups').get().count;
+    if (groupCount === 0) {
+      console.log('No groups found - running initial sync from Google Workspace...');
+      try {
+        const result = await syncAllUsersGroups();
+        console.log(`Initial sync complete: ${result.users} users, ${result.groups} groups, ${result.memberships} memberships`);
+      } catch (err) {
+        console.error('Initial sync failed:', err.message);
+      }
+    }
   } else {
     console.log('Note: Set GOOGLE_SERVICE_ACCOUNT_KEY and GOOGLE_ADMIN_EMAIL for full group sync');
   }
