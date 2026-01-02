@@ -102,7 +102,7 @@
         <ul>
           <li class="active" data-tab="my-key">My Key</li>
           <li data-tab="my-access">My Access</li>
-          <li class="admin-only hidden" data-tab="servers">Servers</li>
+          <li class="admin-only hidden" data-tab="devices">Devices</li>
           <li class="admin-only hidden" data-tab="labels">Labels</li>
           <li class="admin-only hidden" data-tab="groups">Groups</li>
           <li class="admin-only hidden" data-tab="users">Users</li>
@@ -158,7 +158,7 @@
         <!-- My Access Tab -->
         <div id="tab-my-access" class="tab-content hidden">
           <div class="card">
-            <h2>Servers I Have Access To</h2>
+            <h2>Devices I Have Access To</h2>
             <table>
               <thead>
                 <tr><th>Hostname</th><th>Description</th><th>Sync Status</th></tr>
@@ -168,11 +168,11 @@
           </div>
         </div>
 
-        <!-- Servers Tab (Admin) -->
-        <div id="tab-servers" class="tab-content hidden">
+        <!-- Devices Tab (Admin) -->
+        <div id="tab-devices" class="tab-content hidden">
           <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-              <h2>Servers</h2>
+              <h2>Devices</h2>
               <button class="btn btn-secondary" onclick="importServers()">Import from SSH Configs</button>
             </div>
             <div id="import-status" class="alert hidden" style="margin-bottom: 15px;"></div>
@@ -253,11 +253,11 @@
           </div>
 
           <div class="card">
-            <h2>Admin: View Server Access</h2>
+            <h2>Admin: View Device Access</h2>
             <div class="form-group">
-              <label>Select a server:</label>
+              <label>Select a device:</label>
               <select id="admin-server-select" onchange="loadServerAccess()">
-                <option value="">-- Select Server --</option>
+                <option value="">-- Select Device --</option>
               </select>
             </div>
             <div id="server-access-info" class="hidden">
@@ -276,11 +276,11 @@
     </div>
   </div>
 
-  <!-- Manage Server Labels Modal -->
+  <!-- Manage Device Labels Modal -->
   <div id="server-modal" class="modal hidden">
     <div class="modal-content">
       <div class="modal-header">
-        <h3>Manage Server Labels</h3>
+        <h3>Manage Device Labels</h3>
         <span class="modal-close" onclick="closeModal('server-modal')">&times;</span>
       </div>
       <input type="hidden" id="server-id">
@@ -461,7 +461,7 @@
           syncStatus = '<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync</div>';
         }
         return `<tr><td>${s.hostname}</td><td>${s.description || '-'}</td><td>${syncStatus}</td></tr>`;
-      }).join('') : '<tr><td colspan="3">No servers accessible</td></tr>';
+      }).join('') : '<tr><td colspan="3">No devices accessible</td></tr>';
     }
 
     // Load all data (admin)
@@ -552,7 +552,7 @@
       const userOptions = allUsers.map(u => `<option value="${u.id}">${u.name || u.email}</option>`).join('');
       const serverOptions = allServers.map(s => `<option value="${s.id}">${s.hostname}</option>`).join('');
       document.getElementById('admin-user-select').innerHTML = '<option value="">-- Select User --</option>' + userOptions;
-      document.getElementById('admin-server-select').innerHTML = '<option value="">-- Select Server --</option>' + serverOptions;
+      document.getElementById('admin-server-select').innerHTML = '<option value="">-- Select Device --</option>' + serverOptions;
     }
 
     // Modals
@@ -570,7 +570,7 @@
       try {
         const result = await api('/api/import-servers', { method: 'POST' });
         msg.className = 'alert alert-success';
-        msg.textContent = `Import complete: ${result.imported} servers imported, ${result.skipped} skipped (already exist). Processed ${result.configFiles} config files.`;
+        msg.textContent = `Import complete: ${result.imported} devices imported, ${result.skipped} skipped (already exist). Processed ${result.configFiles} config files.`;
         allServers = await api('/api/servers');
         allLabels = await api('/api/labels');
         renderServers();
@@ -748,7 +748,7 @@
           syncStatus = '<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync</div>';
         }
         return `<tr><td>${s.hostname}</td><td>${s.description || '-'}</td><td>${syncStatus}</td></tr>`;
-      }).join('') : '<tr><td colspan="3">No servers accessible</td></tr>';
+      }).join('') : '<tr><td colspan="3">No devices accessible</td></tr>';
       document.getElementById('admin-user-servers').classList.remove('hidden');
     }
 
