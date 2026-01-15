@@ -459,7 +459,8 @@ app.get('/api/users/:id', isAdmin, (req, res) => {
 });
 
 // Import servers from SSH config files
-const SSH_CONFIGS_PATH = process.env.SSH_CONFIGS_PATH || path.join(process.env.HOME, 'hostnames', 'ssh-configs');
+const SSH_CONFIGS_REPO = process.env.SSH_CONFIGS_REPO || path.join(process.env.HOME, 'hostnames');
+const SSH_CONFIGS_PATH = process.env.SSH_CONFIGS_PATH || path.join(SSH_CONFIGS_REPO, 'ssh-configs');
 
 function parseSSHConfig(content, configName) {
   const servers = [];
@@ -545,12 +546,12 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
 // Get last git commit date from SSH configs directory
 app.get('/api/ssh-configs-commit-date', isAdmin, (req, res) => {
   try {
-    if (!fs.existsSync(SSH_CONFIGS_PATH)) {
-      return res.json({ date: null, error: 'SSH configs directory not found' });
+    if (!fs.existsSync(SSH_CONFIGS_REPO)) {
+      return res.json({ date: null, error: 'SSH configs repo not found' });
     }
     const { execSync } = require('child_process');
     const gitDate = execSync('git log -1 --format=%ci', {
-      cwd: SSH_CONFIGS_PATH,
+      cwd: SSH_CONFIGS_REPO,
       encoding: 'utf8'
     }).trim();
     res.json({ date: gitDate });
