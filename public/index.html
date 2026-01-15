@@ -173,7 +173,7 @@
           <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <h2>Devices</h2>
-              <button class="btn btn-secondary" onclick="importServers()">Import from SSH Configs</button>
+              <span id="ssh-configs-commit-date" style="color: #666; font-size: 0.9em;">Loading SSH configs...</span>
             </div>
             <div id="import-status" class="alert hidden" style="margin-bottom: 15px;"></div>
             <table>
@@ -384,6 +384,7 @@
       loadMyServers();
       if (currentUser.isAdmin) {
         loadAllData();
+        startAutoImport();
       }
 
       // Restore previously active tab after admin tabs are revealed
@@ -560,26 +561,48 @@
       document.getElementById(id).classList.add('hidden');
     }
 
-    // Import servers from SSH config files
+    // Import servers from SSH config files (silent auto-import)
     async function importServers() {
-      const msg = document.getElementById('import-status');
-      msg.className = 'alert';
-      msg.textContent = 'Importing servers from SSH config files...';
-      msg.classList.remove('hidden');
-
       try {
-        const result = await api('/api/import-servers', { method: 'POST' });
-        msg.className = 'alert alert-success';
-        msg.textContent = `Import complete: ${result.imported} devices imported, ${result.skipped} skipped (already exist). Processed ${result.configFiles} config files.`;
+        await api('/api/import-servers', { method: 'POST' });
         allServers = await api('/api/servers');
         allLabels = await api('/api/labels');
         renderServers();
         renderLabels();
         populateAdminSelects();
       } catch (e) {
-        msg.className = 'alert alert-error';
-        msg.textContent = e.message;
+        console.error('Auto-import failed:', e.message);
       }
+    }
+
+    // Fetch and display SSH configs last commit date
+    async function updateSshConfigsCommitDate() {
+      const el = document.getElementById('ssh-configs-commit-date');
+      try {
+        const result = await api('/api/ssh-configs-commit-date');
+        if (result.date) {
+          const date = new Date(result.date);
+          el.textContent = `SSH configs last commit: ${date.toLocaleString()}`;
+        } else {
+          el.textContent = result.error || 'Unable to get commit date';
+        }
+      } catch (e) {
+        el.textContent = 'Error loading commit date';
+      }
+    }
+
+    // Auto-import interval reference
+    let autoImportInterval = null;
+
+    // Start auto-import (every 5 minutes)
+    function startAutoImport() {
+      if (autoImportInterval) return;
+      importServers();
+      updateSshConfigsCommitDate();
+      autoImportInterval = setInterval(() => {
+        importServers();
+        updateSshConfigsCommitDate();
+      }, 5 * 60 * 1000);
     }
 
     async function manageServerLabels(serverId) {

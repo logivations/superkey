@@ -542,6 +542,23 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
   }
 });
 
+// Get last git commit date from SSH configs directory
+app.get('/api/ssh-configs-commit-date', isAdmin, (req, res) => {
+  try {
+    if (!fs.existsSync(SSH_CONFIGS_PATH)) {
+      return res.json({ date: null, error: 'SSH configs directory not found' });
+    }
+    const { execSync } = require('child_process');
+    const gitDate = execSync('git log -1 --format=%ci', {
+      cwd: SSH_CONFIGS_PATH,
+      encoding: 'utf8'
+    }).trim();
+    res.json({ date: gitDate });
+  } catch (err) {
+    res.json({ date: null, error: err.message });
+  }
+});
+
 // Server routes
 app.get('/api/servers', isAuthenticated, (req, res) => {
   const servers = db.prepare(`
