@@ -582,8 +582,7 @@
         const result = await api('/api/ssh-configs-commit-date');
         if (result.date) {
           const date = new Date(result.date);
-          const label = result.source === 'git' ? 'SSH configs last commit' : 'SSH configs last modified';
-          el.textContent = `${label}: ${date.toLocaleString()}`;
+          el.textContent = `SSH configs last commit: ${date.toLocaleString()}`;
         } else {
           el.textContent = result.error || 'Unable to get commit date';
         }

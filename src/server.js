@@ -549,29 +549,11 @@ app.get('/api/ssh-configs-commit-date', isAdmin, (req, res) => {
       return res.json({ date: null, error: 'SSH configs directory not found' });
     }
     const { execSync } = require('child_process');
-    // Try git first
-    try {
-      const gitDate = execSync('git log -1 --format=%ci', {
-        cwd: SSH_CONFIGS_PATH,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      }).trim();
-      return res.json({ date: gitDate, source: 'git' });
-    } catch {
-      // Git not available, fall back to file mtime
-      const configFiles = fs.readdirSync(SSH_CONFIGS_PATH).filter(f => f.endsWith('.config'));
-      if (configFiles.length === 0) {
-        return res.json({ date: null, error: 'No config files found' });
-      }
-      let latestMtime = 0;
-      for (const file of configFiles) {
-        const stat = fs.statSync(path.join(SSH_CONFIGS_PATH, file));
-        if (stat.mtimeMs > latestMtime) {
-          latestMtime = stat.mtimeMs;
-        }
-      }
-      return res.json({ date: new Date(latestMtime).toISOString(), source: 'file' });
-    }
+    const gitDate = execSync('git log -1 --format=%ci', {
+      cwd: SSH_CONFIGS_PATH,
+      encoding: 'utf8'
+    }).trim();
+    res.json({ date: gitDate });
   } catch (err) {
     res.json({ date: null, error: err.message });
   }
