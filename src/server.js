@@ -501,6 +501,7 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
     const configFiles = fs.readdirSync(SSH_CONFIGS_PATH).filter(f => f.endsWith('.config'));
     let imported = 0;
     let updated = 0;
+    const hostnamesInRepo = new Set();
 
     for (const configFile of configFiles) {
       const configName = configFile.replace('.config', '');
@@ -508,6 +509,8 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
       const servers = parseSSHConfig(content, configName);
 
       for (const server of servers) {
+        hostnamesInRepo.add(server.hostname);
+
         // Check if server already exists
         const existing = db.prepare('SELECT id, description FROM servers WHERE hostname = ?').get(server.hostname);
         if (existing) {
@@ -536,10 +539,24 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
       }
     }
 
+    // Remove servers that no longer exist in the hostnames repo
+    const allDbServers = db.prepare('SELECT id, hostname FROM servers').all();
+    let removed = 0;
+    for (const dbServer of allDbServers) {
+      if (!hostnamesInRepo.has(dbServer.hostname)) {
+        // Delete server_labels associations first
+        db.prepare('DELETE FROM server_labels WHERE server_id = ?').run(dbServer.id);
+        // Delete the server
+        db.prepare('DELETE FROM servers WHERE id = ?').run(dbServer.id);
+        removed++;
+      }
+    }
+
     res.json({
       success: true,
       imported,
       updated,
+      removed,
       configFiles: configFiles.length
     });
   } catch (err) {
