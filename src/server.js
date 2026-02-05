@@ -500,7 +500,7 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
 
     const configFiles = fs.readdirSync(SSH_CONFIGS_PATH).filter(f => f.endsWith('.config'));
     let imported = 0;
-    let skipped = 0;
+    let updated = 0;
 
     for (const configFile of configFiles) {
       const configName = configFile.replace('.config', '');
@@ -509,9 +509,13 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
 
       for (const server of servers) {
         // Check if server already exists
-        const existing = db.prepare('SELECT id FROM servers WHERE hostname = ?').get(server.hostname);
+        const existing = db.prepare('SELECT id, description FROM servers WHERE hostname = ?').get(server.hostname);
         if (existing) {
-          skipped++;
+          // Update description if it changed (e.g. IP address changed)
+          if (existing.description !== server.description) {
+            db.prepare('UPDATE servers SET description = ? WHERE id = ?').run(server.description, existing.id);
+            updated++;
+          }
           continue;
         }
 
@@ -535,7 +539,7 @@ app.post('/api/import-servers', isAdmin, (req, res) => {
     res.json({
       success: true,
       imported,
-      skipped,
+      updated,
       configFiles: configFiles.length
     });
   } catch (err) {
