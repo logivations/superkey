@@ -3,8 +3,8 @@ version: '3.8'
 services:
   superkey:
     build: .
-    ports:
-      - "80:3000"
+    expose:
+      - "3000"
     volumes:
       - ./data:/data
       - ./credentials.json:/app/credentials.json:ro
@@ -18,3 +18,21 @@ services:
       - SESSION_SECRET=${SESSION_SECRET}
       - NODE_ENV=production
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - superkey
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

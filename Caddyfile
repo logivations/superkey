@@ -1,0 +1,3 @@
+superkey.ops.logivations.com {
+    reverse_proxy superkey:3000
+}
