@@ -18,12 +18,17 @@ set -e
 SUPERKEY_URL="${SUPERKEY_URL:-http://localhost:3000}"
 SERVER=""
 DEPLOY_USER="superkey-deploy"
+SSH_USER=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --superkey-url)
             SUPERKEY_URL="$2"
+            shift 2
+            ;;
+        --ssh-user)
+            SSH_USER="$2"
             shift 2
             ;;
         -*)
@@ -48,13 +53,17 @@ if [ -z "$SERVER" ]; then
     echo ""
     echo "Options:"
     echo "  --superkey-url URL    Superkey API URL (default: \$SUPERKEY_URL or http://localhost:3000)"
+    echo "  --ssh-user USER       SSH as USER on the target (default: current user). Use 'root' for fresh servers."
     echo ""
     echo "Examples:"
     echo "  $0 muc-amr.cs"
     echo "  $0 muc-amr.cs --superkey-url http://superkey.internal:3000"
+    echo "  $0 fleetbot --ssh-user root"
     echo "  SUPERKEY_URL=http://superkey:3000 $0 muc-amr.cs"
     exit 1
 fi
+
+SSH_TARGET="${SSH_USER:+$SSH_USER@}$SERVER"
 
 echo "Superkey Server Setup Script"
 echo "============================"
@@ -66,7 +75,7 @@ echo ""
 
 # Fetch admin public keys from Superkey API
 echo "Fetching admin public keys from Superkey API..."
-ADMIN_DATA=$(curl -sf "${SUPERKEY_URL}/api/admin-keys" 2>/dev/null) || {
+ADMIN_DATA=$(curl -sfL "${SUPERKEY_URL}/api/admin-keys" 2>/dev/null) || {
     echo "Error: Could not connect to Superkey API at ${SUPERKEY_URL}"
     echo "Make sure Superkey is running and accessible."
     exit 1
@@ -96,14 +105,18 @@ PUBLIC_KEYS=$(echo "$ADMIN_DATA" | jq -r '.users[].public_key')
 
 echo ""
 
-# Prompt for sudo password
-echo -n "Enter sudo password for $SERVER: "
-read -rs SUDO_PASS
-echo ""
+# Prompt for sudo password (not needed when SSHing as root)
+if [ "$SSH_USER" = "root" ]; then
+    SUDO_PASS=""
+else
+    echo -n "Enter sudo password for $SSH_TARGET: "
+    read -rs SUDO_PASS
+    echo ""
 
-if [ -z "$SUDO_PASS" ]; then
-    echo "Error: Sudo password required"
-    exit 1
+    if [ -z "$SUDO_PASS" ]; then
+        echo "Error: Sudo password required"
+        exit 1
+    fi
 fi
 
 # Escape single quotes in password for safe embedding
@@ -116,7 +129,7 @@ echo ""
 echo "Setting up $DEPLOY_USER on $SERVER..."
 
 # Run setup on remote server
-ssh "$SERVER" bash << REMOTE_EOF
+ssh "$SSH_TARGET" bash << REMOTE_EOF
 set -e
 
 DEPLOY_USER='$DEPLOY_USER'

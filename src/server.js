@@ -790,6 +790,7 @@ app.get('/api/my-servers', isAuthenticated, (req, res) => {
     JOIN label_groups lg ON l.id = lg.label_id
     JOIN user_groups ug ON lg.group_id = ug.group_id
     WHERE ug.user_id = ?
+    ORDER BY s.hostname COLLATE NOCASE
   `).all(req.user.id);
   res.json(servers.map(s => {
     const expectedHash = computeServerKeysHash(s.id);
@@ -810,6 +811,7 @@ app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
     JOIN label_groups lg ON l.id = lg.label_id
     JOIN user_groups ug ON lg.group_id = ug.group_id
     WHERE ug.user_id = ?
+    ORDER BY s.hostname COLLATE NOCASE
   `).all(req.params.userId);
   res.json(servers.map(s => {
     const expectedHash = computeServerKeysHash(s.id);
@@ -823,14 +825,34 @@ app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
 });
 
 app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
-  const users = db.prepare(`
+  const rows = db.prepare(`
     SELECT DISTINCT u.id, u.email, u.name, u.public_key, g.name as group_name FROM users u
     JOIN user_groups ug ON u.id = ug.user_id
     JOIN groups g ON ug.group_id = g.id
     JOIN label_groups lg ON g.id = lg.group_id
     JOIN server_labels sl ON lg.label_id = sl.label_id
     WHERE sl.server_id = ?
+    ORDER BY g.name COLLATE NOCASE
   `).all(req.params.serverId);
+
+  const byUser = new Map();
+  for (const r of rows) {
+    const existing = byUser.get(r.id);
+    if (existing) {
+      existing.group_names.push(r.group_name);
+    } else {
+      byUser.set(r.id, {
+        id: r.id,
+        email: r.email,
+        name: r.name,
+        public_key: r.public_key,
+        group_names: [r.group_name]
+      });
+    }
+  }
+  const users = [...byUser.values()].sort((a, b) =>
+    (a.name || a.email).localeCompare(b.name || b.email, undefined, { sensitivity: 'base' })
+  );
 
   res.json({ users });
 });
@@ -1012,6 +1034,8 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
+const GROUP_SYNC_INTERVAL_MS = parseInt(process.env.GROUP_SYNC_INTERVAL_MS, 10) || 60 * 60 * 1000;
+
 app.listen(PORT, async () => {
   console.log(`Superkey server running on port ${PORT}`);
   if (serviceAccountAuth) {
@@ -1029,6 +1053,21 @@ app.listen(PORT, async () => {
         console.error('Initial sync failed:', err.message);
       }
     }
+
+    let syncInFlight = false;
+    setInterval(async () => {
+      if (syncInFlight) return;
+      syncInFlight = true;
+      try {
+        const result = await syncAllUsersGroups();
+        console.log(`Scheduled sync complete: ${result.users} users, ${result.groups} groups, ${result.memberships} memberships`);
+      } catch (err) {
+        console.error('Scheduled sync failed:', err.message);
+      } finally {
+        syncInFlight = false;
+      }
+    }, GROUP_SYNC_INTERVAL_MS);
+    console.log(`Scheduled Google group sync every ${Math.round(GROUP_SYNC_INTERVAL_MS / 60000)} min`);
   } else {
     console.log('Note: Set GOOGLE_SERVICE_ACCOUNT_KEY and GOOGLE_ADMIN_EMAIL for full group sync');
   }

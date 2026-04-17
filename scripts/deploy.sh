@@ -8,15 +8,19 @@
 # - Adds users to the 'superkey' group (marker) and 'logi' group (access)
 # - Revokes access for users no longer authorized (removes from superkey group members)
 #
-# Usage: ./scripts/deploy.sh [--dry-run] [--server hostname]
+# Servers are processed in parallel. Output from each server is prefixed
+# with its hostname. Cap concurrency with MAX_JOBS (default 8), or force
+# sequential mode with --serial.
 #
-
-set -e
+# Usage: ./scripts/deploy.sh [--dry-run] [--server hostname] [--serial] [--jobs N]
+#
 
 SUPERKEY_URL="${SUPERKEY_URL:-http://localhost:3000}"
 DEPLOY_USER="${DEPLOY_USER:-superkey-deploy}"
+MAX_JOBS="${MAX_JOBS:-50}"
 DRY_RUN=false
 TARGET_SERVER=""
+SERIAL=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -29,9 +33,17 @@ while [[ $# -gt 0 ]]; do
             TARGET_SERVER="$2"
             shift 2
             ;;
+        --serial)
+            SERIAL=true
+            shift
+            ;;
+        --jobs)
+            MAX_JOBS="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--dry-run] [--server hostname]"
+            echo "Usage: $0 [--dry-run] [--server hostname] [--serial] [--jobs N]"
             exit 1
             ;;
     esac
@@ -46,6 +58,13 @@ if [ "$DRY_RUN" = true ]; then
     echo ""
 fi
 
+if [ "$SERIAL" = true ]; then
+    echo "Running serially (one server at a time)"
+else
+    echo "Running in parallel (max ${MAX_JOBS} concurrent)"
+fi
+echo ""
+
 # Get all servers with access configuration
 echo "Fetching server access data from Superkey..."
 SERVERS_DATA=$(curl -s "${SUPERKEY_URL}/api/deploy-data")
@@ -55,96 +74,51 @@ if [ -z "$SERVERS_DATA" ] || [ "$SERVERS_DATA" = "null" ]; then
     exit 1
 fi
 
-# Parse JSON and process each server
-echo "$SERVERS_DATA" | jq -c '.servers[]' | while read -r server; do
+# Process a single server. All output goes to stdout/stderr; the caller
+# is responsible for prefixing with the hostname.
+# Returns 0 on success, non-zero on any failure.
+process_server() {
+    local server="$1"
+    local HOSTNAME
+    local DESCRIPTION
     HOSTNAME=$(echo "$server" | jq -r '.hostname')
     DESCRIPTION=$(echo "$server" | jq -r '.description // ""')
 
-    # Skip if targeting a specific server and this isn't it
-    if [ -n "$TARGET_SERVER" ] && [ "$HOSTNAME" != "$TARGET_SERVER" ]; then
-        continue
-    fi
-
-    echo ""
     echo "Processing server: $HOSTNAME"
     [ -n "$DESCRIPTION" ] && echo "  Description: $DESCRIPTION"
 
     # Check if any users are configured for this server
+    local USER_COUNT
     USER_COUNT=$(echo "$server" | jq '.users | length')
     if [ "$USER_COUNT" -eq 0 ] || [ -z "$USER_COUNT" ]; then
         echo "  No users configured for this server, skipping..."
-        continue
+        return 0
     fi
 
     # Build list of authorized usernames for this server
+    local AUTHORIZED_USERS
     AUTHORIZED_USERS=$(echo "$server" | jq -r '.users[] | .email' | while read -r email; do
         echo "$email" | cut -d'@' -f1 | tr '.' '_'
     done | sort -u | tr '\n' ' ')
 
     # Test SSH connection (use DEPLOY_USER)
-    SSH_TARGET="$DEPLOY_USER@$HOSTNAME"
+    local SSH_TARGET="$DEPLOY_USER@$HOSTNAME"
     echo "  Testing SSH connection to $SSH_TARGET..."
     if ! ssh -n -o ConnectTimeout=5 -o BatchMode=yes "$SSH_TARGET" "echo 'SSH OK'" 2>/dev/null; then
         echo "  ERROR: Cannot connect to $SSH_TARGET via SSH, skipping..."
         echo "  Run: ./scripts/setup-server.sh $HOSTNAME to configure"
-        continue
+        return 1
     fi
 
     echo "  SSH connection successful"
 
-    # First, revoke access for users no longer authorized
-    echo "  Checking for revoked users..."
-
-    REVOKE_SCRIPT=$(cat <<'REVOKE_EOF'
-#!/bin/bash
-AUTHORIZED_USERS="$1"
-
-# Check if superkey group exists
-if ! getent group superkey &>/dev/null; then
-    echo "    No superkey group yet, skipping revocation check"
-    exit 0
-fi
-
-# Get all users in superkey group
-SUPERKEY_MEMBERS=$(getent group superkey | cut -d: -f4 | tr ',' ' ')
-
-for MEMBER in $SUPERKEY_MEMBERS; do
-    # Check if this member is still authorized
-    if ! echo " $AUTHORIZED_USERS " | grep -q " $MEMBER "; then
-        echo "    Revoking access for $MEMBER..."
-
-        # Remove from superkey and logi groups
-        sudo -n gpasswd -d "$MEMBER" superkey 2>/dev/null || true
-        sudo -n gpasswd -d "$MEMBER" logi 2>/dev/null || true
-
-        # Remove SSH authorized_keys
-        USER_HOME=$(getent passwd "$MEMBER" | cut -d: -f6)
-        if [ -n "$USER_HOME" ] && [ -f "$USER_HOME/.ssh/authorized_keys" ]; then
-            sudo -n rm -f "$USER_HOME/.ssh/authorized_keys"
-            echo "      Removed SSH keys"
-        fi
-
-        # Lock the account (optional - prevents any login)
-        sudo -n usermod -L "$MEMBER" 2>/dev/null || true
-        echo "      Account locked"
-    fi
-done
-REVOKE_EOF
-)
-
-    if [ "$DRY_RUN" = true ]; then
-        echo "    [DRY RUN] Would check and revoke unauthorized users"
-    else
-        ssh "$SSH_TARGET" "bash -s '$AUTHORIZED_USERS'" <<< "$REVOKE_SCRIPT"
-    fi
-
-    # Process each user
-    echo "$server" | jq -c '.users[]' | while read -r user; do
+    # Build per-user setup_user invocations (shell-safe quoting via %q)
+    local USER_CALLS=""
+    while read -r user; do
+        local EMAIL PUBLIC_KEY NAME USERNAME
         EMAIL=$(echo "$user" | jq -r '.email')
         PUBLIC_KEY=$(echo "$user" | jq -r '.public_key // ""')
         NAME=$(echo "$user" | jq -r '.name // ""')
-
-        # Extract username from email (part before @)
         USERNAME=$(echo "$EMAIL" | cut -d'@' -f1 | tr '.' '_')
 
         if [ -z "$PUBLIC_KEY" ]; then
@@ -152,116 +126,137 @@ REVOKE_EOF
             continue
         fi
 
-        echo "    Setting up user: $USERNAME ($EMAIL)"
-
         if [ "$DRY_RUN" = true ]; then
-            echo "      [DRY RUN] Would create user $USERNAME"
-            echo "      [DRY RUN] Would add to groups: superkey, logi"
-            echo "      [DRY RUN] Would set up SSH key"
-        else
-            # Create the user management script to run on remote server
-            # Uses sudo -n (non-interactive) - requires NOPASSWD sudo access
-            REMOTE_SCRIPT=$(cat <<EOF
-#!/bin/bash
+            echo "    [DRY RUN] Would set up user $USERNAME ($EMAIL)"
+            continue
+        fi
 
-USERNAME="$USERNAME"
-PUBLIC_KEY="$PUBLIC_KEY"
-FULL_NAME="$NAME"
+        USER_CALLS+=$(printf 'setup_user %q %q %q || OVERALL_STATUS=1\n' \
+            "$USERNAME" "$NAME" "$PUBLIC_KEY")
+        USER_CALLS+=$'\n'
+    done < <(echo "$server" | jq -c '.users[]')
 
-# Check if we have passwordless sudo
+    local user_failed=0
+    if [ "$DRY_RUN" = true ]; then
+        echo "  [DRY RUN] Would revoke unauthorized users"
+    else
+        # Single SSH connection: revoke + all user setups in one remote session
+        local REMOTE_BODY
+        REMOTE_BODY=$(cat <<'REMOTE_EOF'
 if ! sudo -n true 2>/dev/null; then
-    echo "      ERROR: Passwordless sudo not available"
+    echo "  ERROR: Passwordless sudo not available"
     exit 1
 fi
 
-# Ensure superkey group exists (marker for managed users)
-if ! getent group superkey &>/dev/null; then
-    sudo -n groupadd superkey 2>/dev/null || true
-fi
-
-# Ensure logi group exists (access group)
-if ! getent group logi &>/dev/null; then
-    sudo -n groupadd logi 2>/dev/null || true
-fi
-
-# Ensure docker group exists
-if ! getent group docker &>/dev/null; then
-    sudo -n groupadd docker 2>/dev/null || true
-fi
-
-# Create user if doesn't exist
-if ! id "\$USERNAME" &>/dev/null; then
-    echo "      Creating user \$USERNAME..."
-    if ! sudo -n useradd -m -s /bin/bash -c "\$FULL_NAME" "\$USERNAME" 2>&1; then
-        echo "      ERROR: Failed to create user"
-        exit 1
+# Ensure required groups exist
+for g in superkey logi docker; do
+    if ! getent group "$g" &>/dev/null; then
+        sudo -n groupadd "$g" 2>/dev/null || true
     fi
-else
-    echo "      User \$USERNAME already exists"
-    # Unlock account if it was previously locked
-    sudo -n usermod -U "\$USERNAME" 2>/dev/null || true
+done
+
+# Ensure /data exists and is writable by superkey users
+# Mode 2775: setgid so new files inherit the superkey group, group-writable
+if [ ! -d /data ]; then
+    sudo -n mkdir -p /data
 fi
+sudo -n chgrp superkey /data
+sudo -n chmod 2775 /data
 
-# Add user to superkey group (marker)
-if ! id -nG "\$USERNAME" | grep -qw "superkey"; then
-    echo "      Adding \$USERNAME to superkey group..."
-    sudo -n usermod -aG superkey "\$USERNAME" || echo "      Warning: Could not add to superkey group"
-fi
-
-# Add user to logi group (access)
-if ! id -nG "\$USERNAME" | grep -qw "logi"; then
-    echo "      Adding \$USERNAME to logi group..."
-    sudo -n usermod -aG logi "\$USERNAME" || echo "      Warning: Could not add to logi group"
-fi
-
-# Add user to docker group (allows docker without sudo)
-if ! id -nG "\$USERNAME" | grep -qw "docker"; then
-    echo "      Adding \$USERNAME to docker group..."
-    sudo -n usermod -aG docker "\$USERNAME" || echo "      Warning: Could not add to docker group"
-fi
-
-# Set up SSH directory and authorized_keys
-USER_HOME=\$(getent passwd "\$USERNAME" | cut -d: -f6)
-if [ -z "\$USER_HOME" ]; then
-    echo "      ERROR: Could not determine home directory"
-    exit 1
-fi
-
-SSH_DIR="\$USER_HOME/.ssh"
-AUTH_KEYS="\$SSH_DIR/authorized_keys"
-
-sudo -n mkdir -p "\$SSH_DIR"
-sudo -n chmod 700 "\$SSH_DIR"
-
-# Replace authorized_keys with current key (ensures old keys are removed)
-echo "\$PUBLIC_KEY" | sudo -n tee "\$AUTH_KEYS" > /dev/null
-sudo -n chmod 600 "\$AUTH_KEYS"
-sudo -n chown -R "\$USERNAME:\$USERNAME" "\$SSH_DIR"
-
-# Add source line to .bashrc if not already present
-BASHRC="\$USER_HOME/.bashrc"
-SOURCE_LINE="source /home/logi/deploy/linux/setup.bash"
-if sudo -n test -f "/home/logi/deploy/linux/setup.bash"; then
-    if ! sudo -n grep -qF "\$SOURCE_LINE" "\$BASHRC" 2>/dev/null; then
-        echo "      Adding setup.bash to .bashrc..."
-        echo "\$SOURCE_LINE" | sudo -n tee -a "\$BASHRC" > /dev/null
-        sudo -n chown "\$USERNAME:\$USERNAME" "\$BASHRC"
-    fi
-fi
-
-echo "      Done setting up \$USERNAME"
-EOF
-)
-            # Execute the script on the remote server
-            ssh "$SSH_TARGET" "bash -s" <<< "$REMOTE_SCRIPT"
+# Revoke users currently in superkey group but no longer authorized
+if getent group superkey &>/dev/null; then
+    SUPERKEY_MEMBERS=$(getent group superkey | cut -d: -f4 | tr ',' ' ')
+    for MEMBER in $SUPERKEY_MEMBERS; do
+        if ! echo " $AUTHORIZED_USERS " | grep -q " $MEMBER "; then
+            echo "    Revoking access for $MEMBER..."
+            sudo -n gpasswd -d "$MEMBER" superkey 2>/dev/null || true
+            sudo -n gpasswd -d "$MEMBER" logi 2>/dev/null || true
+            REV_HOME=$(getent passwd "$MEMBER" | cut -d: -f6)
+            if [ -n "$REV_HOME" ] && [ -f "$REV_HOME/.ssh/authorized_keys" ]; then
+                sudo -n rm -f "$REV_HOME/.ssh/authorized_keys"
+                echo "      Removed SSH keys"
+            fi
+            sudo -n usermod -L "$MEMBER" 2>/dev/null || true
+            echo "      Account locked"
         fi
     done
+fi
+
+setup_user() {
+    local USERNAME="$1"
+    local FULL_NAME="$2"
+    local PUBLIC_KEY="$3"
+
+    echo "    Setting up user: $USERNAME"
+
+    if ! id "$USERNAME" &>/dev/null; then
+        echo "      Creating user $USERNAME..."
+        if ! sudo -n useradd -m -s /bin/bash -c "$FULL_NAME" "$USERNAME" 2>&1; then
+            echo "      ERROR: Failed to create user"
+            return 1
+        fi
+    else
+        echo "      User $USERNAME already exists"
+        sudo -n usermod -U "$USERNAME" 2>/dev/null || true
+    fi
+
+    for g in superkey logi docker; do
+        if ! id -nG "$USERNAME" | grep -qw "$g"; then
+            echo "      Adding $USERNAME to $g group..."
+            sudo -n usermod -aG "$g" "$USERNAME" || echo "      Warning: Could not add to $g group"
+        fi
+    done
+
+    local USER_HOME SSH_DIR AUTH_KEYS
+    USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+    if [ -z "$USER_HOME" ]; then
+        echo "      ERROR: Could not determine home directory"
+        return 1
+    fi
+    SSH_DIR="$USER_HOME/.ssh"
+    AUTH_KEYS="$SSH_DIR/authorized_keys"
+
+    sudo -n mkdir -p "$SSH_DIR"
+    sudo -n chmod 700 "$SSH_DIR"
+    echo "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+    sudo -n chmod 600 "$AUTH_KEYS"
+    sudo -n chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+
+    local BASHRC="$USER_HOME/.bashrc"
+    local SOURCE_LINE="source /home/logi/deploy/linux/setup.bash"
+    if sudo -n test -f "/home/logi/deploy/linux/setup.bash"; then
+        if ! sudo -n grep -qF "$SOURCE_LINE" "$BASHRC" 2>/dev/null; then
+            echo "      Adding setup.bash to .bashrc..."
+            echo "$SOURCE_LINE" | sudo -n tee -a "$BASHRC" > /dev/null
+            sudo -n chown "$USERNAME:$USERNAME" "$BASHRC"
+        fi
+    fi
+
+    echo "      Done setting up $USERNAME"
+}
+
+OVERALL_STATUS=0
+REMOTE_EOF
+)
+
+        local REMOTE_SCRIPT
+        REMOTE_SCRIPT="AUTHORIZED_USERS=$(printf '%q' "$AUTHORIZED_USERS")
+${REMOTE_BODY}
+${USER_CALLS}
+exit \$OVERALL_STATUS"
+
+        if ! ssh "$SSH_TARGET" "bash -s" <<< "$REMOTE_SCRIPT"; then
+            echo "  ERROR: Remote setup failed on $HOSTNAME"
+            user_failed=1
+        fi
+    fi
 
     echo "  Completed processing $HOSTNAME"
 
     # Report deployment status to API
-    if [ "$DRY_RUN" = false ]; then
+    if [ "$DRY_RUN" = false ] && [ "$user_failed" -eq 0 ]; then
         # Use the expected hash from the API (computed server-side for consistency)
+        local KEYS_HASH REPORT_RESULT
         KEYS_HASH=$(echo "$server" | jq -r '.expected_keys_hash')
 
         echo "  Reporting deployment status to API (hash: $KEYS_HASH)..."
@@ -275,7 +270,76 @@ EOF
             echo "  Warning: Failed to record deployment status: $REPORT_RESULT"
         fi
     fi
-done
 
+    return "$user_failed"
+}
+
+# Block until a background job slot is free.
+wait_for_slot() {
+    while [ "$(jobs -rp | wc -l)" -ge "$MAX_JOBS" ]; do
+        wait -n 2>/dev/null || true
+    done
+}
+
+# Track per-host exit status via temp files (set -e would abort the whole
+# run on the first server failure, which we explicitly do not want).
+STATUS_DIR=$(mktemp -d)
+trap 'rm -rf "$STATUS_DIR"' EXIT
+
+HOSTS_SEEN=()
+
+while read -r server; do
+    HOSTNAME=$(echo "$server" | jq -r '.hostname')
+
+    # Skip if targeting a specific server and this isn't it
+    if [ -n "$TARGET_SERVER" ] && [ "$HOSTNAME" != "$TARGET_SERVER" ]; then
+        continue
+    fi
+
+    HOSTS_SEEN+=("$HOSTNAME")
+
+    if [ "$SERIAL" = true ]; then
+        echo ""
+        if process_server "$server" 2>&1 | sed "s/^/[$HOSTNAME] /"; then
+            echo "0" > "$STATUS_DIR/$HOSTNAME"
+        else
+            # PIPESTATUS[0] is process_server's exit code before sed
+            echo "${PIPESTATUS[0]}" > "$STATUS_DIR/$HOSTNAME"
+        fi
+    else
+        wait_for_slot
+        (
+            if process_server "$server" 2>&1 | sed "s/^/[$HOSTNAME] /"; then
+                echo "0" > "$STATUS_DIR/$HOSTNAME"
+            else
+                echo "${PIPESTATUS[0]}" > "$STATUS_DIR/$HOSTNAME"
+            fi
+        ) &
+    fi
+done < <(echo "$SERVERS_DATA" | jq -c '.servers[]')
+
+# Wait for any remaining background jobs
+if [ "$SERIAL" != true ]; then
+    wait
+fi
+
+# Summarize results
 echo ""
 echo "Deployment complete!"
+
+FAILED_HOSTS=()
+for host in "${HOSTS_SEEN[@]}"; do
+    status_file="$STATUS_DIR/$host"
+    if [ ! -f "$status_file" ] || [ "$(cat "$status_file")" != "0" ]; then
+        FAILED_HOSTS+=("$host")
+    fi
+done
+
+if [ "${#FAILED_HOSTS[@]}" -gt 0 ]; then
+    echo ""
+    echo "The following hosts reported errors:"
+    for host in "${FAILED_HOSTS[@]}"; do
+        echo "  - $host"
+    done
+    exit 1
+fi

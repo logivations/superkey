@@ -787,7 +787,7 @@
         <tr>
           <td>${u.name || '-'}</td>
           <td>${u.email}</td>
-          <td><span class="tag">${u.group_name}</span></td>
+          <td>${u.group_names.map(g => `<span class="tag">${g}</span>`).join(' ')}</td>
           <td>${u.public_key ? '<span class="tag tag-green">Yes</span>' : '<span class="tag">No</span>'}</td>
         </tr>
       `).join('') || '<tr><td colspan="4">No users have access</td></tr>';
