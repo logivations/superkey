@@ -249,15 +249,24 @@ For each server, the deploy script:
 4. **Creates/updates users** who are authorized:
    - Creates system user (username from email: `john.doe@example.com` → `john_doe`)
    - Adds to `superkey` group (marker for Superkey-managed accounts)
-   - Adds to `logi` group (for shared permissions)
+   - Adds to `logi` group (for shared permissions + scoped sudo)
+   - Adds to `docker` group (container management)
+   - Adds to `adm` and `systemd-journal` groups, when present (read system logs)
    - Sets up SSH authorized_keys with their public key
+
+It also installs `/etc/sudoers.d/logi`, granting the `logi` group **scoped
+passwordless sudo** for host troubleshooting (`systemctl`, `journalctl`,
+`dmesg`, `reboot`, `shutdown`). Command paths are resolved per-host and the
+file is validated with `visudo` before install. Managed accounts have a locked
+password and no general sudo, so this is the only sudo they get.
 
 ### System Groups on Servers
 
 | Group      | Purpose                                                                   |
 |------------|---------------------------------------------------------------------------|
 | `superkey` | Marker group. All Superkey-managed users are in this group. Used to identify which accounts can be safely managed (revoked) by Superkey without affecting other system users. |
-| `logi`     | Access group. Used for shared permissions like access to certain directories, sudo rules, etc. Configure your server permissions based on membership in this group. |
+| `logi`     | Access group. Used for shared permissions like access to certain directories and sudo rules. The deploy script installs `/etc/sudoers.d/logi` granting this group scoped NOPASSWD sudo (`systemctl`, `journalctl`, `dmesg`, `reboot`, `shutdown`). Configure additional server permissions based on membership in this group. |
+| `adm` / `systemd-journal` | Standard system groups. Managed users are added to these (when present) so they can read full system/kernel logs via `journalctl`. |
 
 ---
 

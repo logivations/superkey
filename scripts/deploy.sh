@@ -163,14 +163,54 @@ fi
 sudo -n chgrp superkey /data
 sudo -n chmod 2775 /data
 
+# Grant the logi group scoped passwordless sudo for host troubleshooting
+# (reboots, service management, reading system logs). Managed accounts are
+# otherwise unprivileged; this replaces the implicit docker-based root path
+# with explicit, audited sudo. Paths are resolved per-host (distros differ)
+# and the file is validated with visudo before install.
+LOGI_SUDO_CMDS=""
+add_sudo_cmd() {
+    for p in "$@"; do
+        if [ -x "$p" ]; then
+            [ -n "$LOGI_SUDO_CMDS" ] && LOGI_SUDO_CMDS+=", "
+            LOGI_SUDO_CMDS+="$p"
+            return
+        fi
+    done
+}
+add_sudo_cmd /usr/bin/systemctl /bin/systemctl
+add_sudo_cmd /usr/bin/journalctl /bin/journalctl
+add_sudo_cmd /usr/bin/dmesg /bin/dmesg
+add_sudo_cmd /usr/sbin/reboot /sbin/reboot
+add_sudo_cmd /usr/sbin/shutdown /sbin/shutdown
+
+if [ -n "$LOGI_SUDO_CMDS" ]; then
+    LOGI_SUDOERS="/etc/sudoers.d/logi"
+    LOGI_SUDOERS_LINE="%logi ALL=(ALL) NOPASSWD: $LOGI_SUDO_CMDS"
+    if [ "$(sudo -n cat "$LOGI_SUDOERS" 2>/dev/null)" != "$LOGI_SUDOERS_LINE" ]; then
+        echo "  Configuring scoped sudo for logi group..."
+        LOGI_TMP=$(mktemp)
+        printf '%s\n' "$LOGI_SUDOERS_LINE" > "$LOGI_TMP"
+        if sudo -n visudo -cf "$LOGI_TMP" >/dev/null 2>&1; then
+            sudo -n cp "$LOGI_TMP" "$LOGI_SUDOERS"
+            sudo -n chmod 440 "$LOGI_SUDOERS"
+            echo "    Installed: $LOGI_SUDOERS_LINE"
+        else
+            echo "    ERROR: logi sudoers failed visudo validation, not installing"
+        fi
+        rm -f "$LOGI_TMP"
+    fi
+fi
+
 # Revoke users currently in superkey group but no longer authorized
 if getent group superkey &>/dev/null; then
     SUPERKEY_MEMBERS=$(getent group superkey | cut -d: -f4 | tr ',' ' ')
     for MEMBER in $SUPERKEY_MEMBERS; do
         if ! echo " $AUTHORIZED_USERS " | grep -q " $MEMBER "; then
             echo "    Revoking access for $MEMBER..."
-            sudo -n gpasswd -d "$MEMBER" superkey 2>/dev/null || true
-            sudo -n gpasswd -d "$MEMBER" logi 2>/dev/null || true
+            for g in superkey logi docker adm systemd-journal; do
+                sudo -n gpasswd -d "$MEMBER" "$g" 2>/dev/null || true
+            done
             REV_HOME=$(getent passwd "$MEMBER" | cut -d: -f6)
             if [ -n "$REV_HOME" ] && [ -f "$REV_HOME/.ssh/authorized_keys" ]; then
                 sudo -n rm -f "$REV_HOME/.ssh/authorized_keys"
@@ -200,7 +240,13 @@ setup_user() {
         sudo -n usermod -U "$USERNAME" 2>/dev/null || true
     fi
 
-    for g in superkey logi docker; do
+    # superkey/logi/docker are created above if missing; adm/systemd-journal
+    # are standard system groups (for reading system logs) and are only joined
+    # if they already exist on the host.
+    for g in superkey logi docker adm systemd-journal; do
+        if ! getent group "$g" &>/dev/null; then
+            continue
+        fi
         if ! id -nG "$USERNAME" | grep -qw "$g"; then
             echo "      Adding $USERNAME to $g group..."
             sudo -n usermod -aG "$g" "$USERNAME" || echo "      Warning: Could not add to $g group"
