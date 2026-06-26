@@ -100,6 +100,41 @@ Admins are members of the `superkey_admins` Google Workspace group. They can:
 
 ---
 
+## Bot Keys (per-user automation)
+
+Users can register **bot keys** for automation agents (e.g. `nemo`) that act on
+their behalf. The design goal is to let a bot work "the same way" a user does
+over SSH, without ever handing it the user's personal key or more access than
+the user already has.
+
+**Model**
+
+- A bot is a child of a user (`bot_keys` table): a `name`, a dedicated
+  `public_key`, and an optional `source_cidr` restriction.
+- It is deployed as a **separate Linux account** named `<username>_<bot>`
+  (e.g. `johannes_plapp_nemo`) on **exactly the servers the owning user can
+  already reach** — access is derived from the owner's group membership, so a
+  user can never grant a bot more than they have. Self-service is therefore
+  safe: the user's own scope is the hard ceiling.
+- The bot account joins the **`superkey`** marker group (managed/revocable by
+  superkey, access to the shared `/data` dir) plus **`adm`/`systemd-journal`**
+  for **read-only** access to the full system journal. It is **not** in
+  `logi`/`docker`, so it has **no scoped sudo and no docker=root**. A bot is
+  intentionally less privileged than its human owner.
+- The key is installed with hardened `authorized_keys` options:
+  `restrict,pty` plus `from="<cidr>"` when a source restriction is set — so a
+  leaked bot key is useless off its host.
+
+**Lifecycle**
+
+- Register/rotate/revoke from the **My Bots** tab (self-service, no admin).
+  Re-submitting the same bot name rotates its key.
+- Revocation is automatic: deleting a bot removes it from the per-server
+  authorized list, so the next deploy locks the account and removes its key
+  (the same revoke path used for departed users).
+- Public keys are validated server-side (single line, must start with a real
+  key type) to prevent `authorized_keys` option/line injection.
+
 ## Technology Stack
 
 | Component          | Technology                                         |
@@ -288,7 +323,10 @@ All endpoints require authentication via Google SSO session unless noted.
 |---------------------------|--------|---------|--------------------------------------|
 | `/api/me`                 | GET    | User    | Get current user info                |
 | `/api/me/public-key`      | PUT    | User    | Update current user's SSH public key |
-| `/api/users`              | GET    | Admin   | List all users                       |
+| `/api/me/bots`            | GET    | User    | List the current user's bot keys     |
+| `/api/me/bots`            | POST   | User    | Create/rotate a bot key (`name`, `publicKey`, optional `sourceCidr`) |
+| `/api/me/bots/:id`        | DELETE | User    | Revoke one of the current user's bots |
+| `/api/users`              | GET    | Admin   | List all users (incl. `bot_count`)   |
 | `/api/users/:id`          | GET    | Admin   | Get specific user                    |
 
 ### Server Endpoints

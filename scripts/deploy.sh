@@ -6,6 +6,9 @@
 # - Creates system users for authorized users
 # - Adds their public SSH keys
 # - Adds users to the 'superkey' group (marker) and 'logi' group (access)
+# - Provisions per-user bot accounts (<user>_<bot>): a separate, unprivileged
+#   account (superkey + adm/systemd-journal for read-only logs, no logi/docker)
+#   with a hardened bot key
 # - Revokes access for users no longer authorized (removes from superkey group members)
 #
 # Servers are processed in parallel. Output from each server is prefixed
@@ -95,11 +98,17 @@ process_server() {
         return 0
     fi
 
-    # Build list of authorized usernames for this server
+    # Build list of authorized usernames for this server: human accounts
+    # (derived from email) plus their bot accounts (computed server-side).
+    # The revoke pass below locks anything in the superkey group that isn't
+    # in this list, so both kinds must be present here.
     local AUTHORIZED_USERS
-    AUTHORIZED_USERS=$(echo "$server" | jq -r '.users[] | .email' | while read -r email; do
-        echo "$email" | cut -d'@' -f1 | tr '.' '_'
-    done | sort -u | tr '\n' ' ')
+    AUTHORIZED_USERS=$( {
+        echo "$server" | jq -r '.users[] | .email' | while read -r email; do
+            echo "$email" | cut -d'@' -f1 | tr '.' '_'
+        done
+        echo "$server" | jq -r '.users[].bots[]?.account'
+    } | sort -u | tr '\n' ' ')
 
     # Test SSH connection (use DEPLOY_USER)
     local SSH_TARGET="$DEPLOY_USER@$HOSTNAME"
@@ -112,7 +121,10 @@ process_server() {
 
     echo "  SSH connection successful"
 
-    # Build per-user setup_user invocations (shell-safe quoting via %q)
+    # Build per-user setup invocations (shell-safe quoting via %q). Each human
+    # gets setup_user; each of their bots gets setup_bot as a separate,
+    # unprivileged account. Bots are deployed independently of the human's own
+    # key (a user may have bots but no personal key on this host).
     local USER_CALLS=""
     while read -r user; do
         local EMAIL PUBLIC_KEY NAME USERNAME
@@ -121,19 +133,40 @@ process_server() {
         NAME=$(echo "$user" | jq -r '.name // ""')
         USERNAME=$(echo "$EMAIL" | cut -d'@' -f1 | tr '.' '_')
 
-        if [ -z "$PUBLIC_KEY" ]; then
-            echo "    User $EMAIL has no public key, skipping..."
-            continue
+        if [ -n "$PUBLIC_KEY" ]; then
+            if [ "$DRY_RUN" = true ]; then
+                echo "    [DRY RUN] Would set up user $USERNAME ($EMAIL)"
+            else
+                USER_CALLS+=$(printf 'setup_user %q %q %q || OVERALL_STATUS=1\n' \
+                    "$USERNAME" "$NAME" "$PUBLIC_KEY")
+                USER_CALLS+=$'\n'
+            fi
+        else
+            echo "    User $EMAIL has no public key, skipping user account..."
         fi
 
-        if [ "$DRY_RUN" = true ]; then
-            echo "    [DRY RUN] Would set up user $USERNAME ($EMAIL)"
-            continue
-        fi
+        # Bot accounts owned by this user
+        while read -r bot; do
+            [ -z "$bot" ] && continue
+            local BACCT BKEY BOPTS BNAME
+            BACCT=$(echo "$bot" | jq -r '.account')
+            BKEY=$(echo "$bot" | jq -r '.public_key // ""')
+            BOPTS=$(echo "$bot" | jq -r '.key_options // "restrict,pty"')
+            BNAME=$(echo "$bot" | jq -r '.name')
 
-        USER_CALLS+=$(printf 'setup_user %q %q %q || OVERALL_STATUS=1\n' \
-            "$USERNAME" "$NAME" "$PUBLIC_KEY")
-        USER_CALLS+=$'\n'
+            if [ -z "$BKEY" ]; then
+                continue
+            fi
+
+            if [ "$DRY_RUN" = true ]; then
+                echo "    [DRY RUN] Would set up bot $BACCT ($EMAIL / $BNAME)"
+                continue
+            fi
+
+            USER_CALLS+=$(printf 'setup_bot %q %q %q %q || OVERALL_STATUS=1\n' \
+                "$BACCT" "$BNAME" "$BKEY" "$BOPTS")
+            USER_CALLS+=$'\n'
+        done < <(echo "$user" | jq -c '.bots[]?')
     done < <(echo "$server" | jq -c '.users[]')
 
     local user_failed=0
@@ -279,6 +312,60 @@ setup_user() {
     fi
 
     echo "      Done setting up $USERNAME"
+}
+
+setup_bot() {
+    local ACCT="$1"
+    local BOT_NAME="$2"
+    local PUBLIC_KEY="$3"
+    local KEY_OPTS="$4"
+
+    echo "    Setting up bot account: $ACCT"
+
+    if ! id "$ACCT" &>/dev/null; then
+        echo "      Creating bot account $ACCT..."
+        if ! sudo -n useradd -m -s /bin/bash -c "superkey bot: $BOT_NAME" "$ACCT" 2>&1; then
+            echo "      ERROR: Failed to create bot account"
+            return 1
+        fi
+    else
+        echo "      Bot account $ACCT already exists"
+        sudo -n usermod -U "$ACCT" 2>/dev/null || true
+    fi
+
+    # Bots join the superkey marker group (managed + revocable by superkey,
+    # access to the shared /data dir) plus adm/systemd-journal for READ-ONLY
+    # access to the full system journal. They are deliberately NOT in
+    # logi/docker, so they get no scoped sudo and no docker=root: a bot is
+    # meant to be less privileged than its human owner. adm/systemd-journal are
+    # standard system groups, joined only if they already exist on the host.
+    for g in superkey adm systemd-journal; do
+        if ! getent group "$g" &>/dev/null; then
+            continue
+        fi
+        if ! id -nG "$ACCT" | grep -qw "$g"; then
+            echo "      Adding $ACCT to $g group..."
+            sudo -n usermod -aG "$g" "$ACCT" || echo "      Warning: Could not add to $g group"
+        fi
+    done
+
+    local USER_HOME SSH_DIR AUTH_KEYS
+    USER_HOME=$(getent passwd "$ACCT" | cut -d: -f6)
+    if [ -z "$USER_HOME" ]; then
+        echo "      ERROR: Could not determine home directory"
+        return 1
+    fi
+    SSH_DIR="$USER_HOME/.ssh"
+    AUTH_KEYS="$SSH_DIR/authorized_keys"
+
+    sudo -n mkdir -p "$SSH_DIR"
+    sudo -n chmod 700 "$SSH_DIR"
+    # KEY_OPTS is computed and validated server-side (restrict,pty[,from=...]).
+    printf '%s %s\n' "$KEY_OPTS" "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+    sudo -n chmod 600 "$AUTH_KEYS"
+    sudo -n chown -R "$ACCT:$ACCT" "$SSH_DIR"
+
+    echo "      Done setting up bot $ACCT"
 }
 
 OVERALL_STATUS=0

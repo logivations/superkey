@@ -11,6 +11,63 @@ const fs = require('fs');
 const archiver = require('archiver');
 const db = require('./database');
 
+// Derive the Linux username superkey provisions for an email
+// (matches deploy.sh: local-part, dots -> underscores).
+function emailToUsername(email) {
+  return email.split('@')[0].replace(/\./g, '_');
+}
+
+// The dedicated, unprivileged Linux account a user's bot logs in as.
+function botAccount(email, botName) {
+  return `${emailToUsername(email)}_${botName}`;
+}
+
+// authorized_keys option prefix for a bot key. Bots are non-interactive
+// automation, so we lock the key down: `restrict` disables all forwarding
+// and `pty` is re-enabled (agents commonly need a tty). An optional source
+// restriction (`from=`) means a leaked key is useless off the bot's host.
+function botKeyOptions(sourceCidr) {
+  let opts = 'restrict,pty';
+  if (sourceCidr) opts += `,from="${sourceCidr}"`;
+  return opts;
+}
+
+// Allowed SSH public-key types (first token of an authorized_keys line).
+const SSH_KEY_TYPES = new Set([
+  'ssh-ed25519', 'ssh-rsa', 'ssh-dss',
+  'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+  'sk-ssh-ed25519@openssh.com', 'sk-ecdsa-sha2-nistp256@openssh.com'
+]);
+
+// Validate a single public key. Rejects multi-line input and anything whose
+// first token is not a real key type, so a user can't smuggle authorized_keys
+// options (command=, from=, a second key, ...) into the file we deploy.
+function isValidPublicKey(key) {
+  if (typeof key !== 'string') return false;
+  const k = key.trim();
+  if (!k || /[\r\n]/.test(k)) return false;
+  const parts = k.split(/\s+/);
+  if (parts.length < 2) return false;
+  if (!SSH_KEY_TYPES.has(parts[0])) return false;
+  return /^[A-Za-z0-9+/]+={0,3}$/.test(parts[1]);
+}
+
+// Bot names become part of a Linux username, so keep them strict.
+function sanitizeBotName(name) {
+  if (typeof name !== 'string') return null;
+  const n = name.trim().toLowerCase();
+  return /^[a-z][a-z0-9_]{0,19}$/.test(n) ? n : null;
+}
+
+// Optional `from=` value: comma-separated IPs/CIDRs only, no quotes/newlines.
+function isValidSourceList(s) {
+  if (s == null || s === '') return true;
+  if (typeof s !== 'string' || s.length > 200) return false;
+  return /^[0-9a-fA-F:.\/]+(,[0-9a-fA-F:.\/]+)*$/.test(s);
+}
+
+const MAX_BOTS_PER_USER = 10;
+
 // Compute hash of users/keys for a server to detect if deployment is up-to-date
 function computeServerKeysHash(serverId) {
   const users = db.prepare(`
@@ -21,7 +78,21 @@ function computeServerKeysHash(serverId) {
     WHERE sl.server_id = ? AND u.public_key IS NOT NULL AND u.public_key != ''
     ORDER BY u.email
   `).all(serverId);
-  const data = users.map(u => `${u.email}:${u.public_key}`).join('\n');
+  // Bot keys are part of what gets deployed, so include them in the hash:
+  // adding/removing a bot should mark the server as needing a sync.
+  const bots = db.prepare(`
+    SELECT u.email, bk.name, bk.public_key, bk.source_cidr FROM bot_keys bk
+    JOIN users u ON u.id = bk.user_id
+    JOIN user_groups ug ON u.id = ug.user_id
+    JOIN label_groups lg ON ug.group_id = lg.group_id
+    JOIN server_labels sl ON lg.label_id = sl.label_id
+    WHERE sl.server_id = ?
+    ORDER BY u.email, bk.name
+  `).all(serverId);
+  const data = [
+    ...users.map(u => `${u.email}:${u.public_key}`),
+    ...bots.map(b => `${b.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`)
+  ].join('\n');
   return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
 }
 
@@ -443,12 +514,69 @@ app.get('/api/service-account-status', isAdmin, (req, res) => {
 // User routes
 app.put('/api/me/public-key', isAuthenticated, (req, res) => {
   const { publicKey } = req.body;
-  db.prepare('UPDATE users SET public_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(publicKey, req.user.id);
+  const key = typeof publicKey === 'string' ? publicKey.trim() : '';
+  // Allow clearing the key, but reject anything that isn't a clean single key.
+  if (key !== '' && !isValidPublicKey(key)) {
+    return res.status(400).json({ error: 'Invalid SSH public key (expected a single line like "ssh-ed25519 AAAA...").' });
+  }
+  db.prepare('UPDATE users SET public_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(key, req.user.id);
+  res.json({ success: true });
+});
+
+// Bot keys (self-service): a user manages automation keys (e.g. "nemo") that
+// are deployed as separate, unprivileged accounts on the servers the user can
+// already reach. A user only ever sees/edits their own bots.
+app.get('/api/me/bots', isAuthenticated, (req, res) => {
+  const bots = db.prepare(
+    'SELECT id, name, public_key, source_cidr, created_at FROM bot_keys WHERE user_id = ? ORDER BY name'
+  ).all(req.user.id);
+  res.json(bots.map(b => ({ ...b, account: botAccount(req.user.email, b.name) })));
+});
+
+app.post('/api/me/bots', isAuthenticated, (req, res) => {
+  const name = sanitizeBotName(req.body.name);
+  const publicKey = typeof req.body.publicKey === 'string' ? req.body.publicKey.trim() : '';
+  const sourceCidr = (req.body.sourceCidr || '').trim();
+
+  if (!name) {
+    return res.status(400).json({ error: 'Invalid bot name (use 1-20 chars: a-z, 0-9, _, starting with a letter).' });
+  }
+  if (!isValidPublicKey(publicKey)) {
+    return res.status(400).json({ error: 'Invalid SSH public key (expected a single line like "ssh-ed25519 AAAA...").' });
+  }
+  if (!isValidSourceList(sourceCidr)) {
+    return res.status(400).json({ error: 'Invalid source restriction (use comma-separated IPs/CIDRs).' });
+  }
+
+  const count = db.prepare('SELECT COUNT(*) AS n FROM bot_keys WHERE user_id = ?').get(req.user.id).n;
+  const exists = db.prepare('SELECT 1 FROM bot_keys WHERE user_id = ? AND name = ?').get(req.user.id, name);
+  if (!exists && count >= MAX_BOTS_PER_USER) {
+    return res.status(400).json({ error: `Bot limit reached (max ${MAX_BOTS_PER_USER}).` });
+  }
+
+  // Upsert by (user, name) so re-submitting rotates the key.
+  db.prepare(`
+    INSERT INTO bot_keys (user_id, name, public_key, source_cidr)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT (user_id, name) DO UPDATE SET public_key = excluded.public_key, source_cidr = excluded.source_cidr
+  `).run(req.user.id, name, publicKey, sourceCidr || null);
+
+  const bot = db.prepare('SELECT id, name, public_key, source_cidr, created_at FROM bot_keys WHERE user_id = ? AND name = ?').get(req.user.id, name);
+  res.json({ ...bot, account: botAccount(req.user.email, bot.name) });
+});
+
+app.delete('/api/me/bots/:id', isAuthenticated, (req, res) => {
+  const result = db.prepare('DELETE FROM bot_keys WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'Bot not found' });
   res.json({ success: true });
 });
 
 app.get('/api/users', isAdmin, (req, res) => {
-  const users = db.prepare('SELECT id, email, name, public_key, created_at FROM users').all();
+  const users = db.prepare(`
+    SELECT u.id, u.email, u.name, u.public_key, u.created_at,
+           (SELECT COUNT(*) FROM bot_keys bk WHERE bk.user_id = u.id) AS bot_count
+    FROM users u
+  `).all();
   res.json(users);
 });
 
@@ -1018,7 +1146,13 @@ app.get('/api/deploy-data', (req, res) => {
           users: users.map(u => ({
             email: u.email,
             name: u.name,
-            public_key: u.public_key
+            public_key: u.public_key,
+            bots: db.prepare('SELECT name, public_key, source_cidr FROM bot_keys WHERE user_id = ?').all(u.id).map(b => ({
+              name: b.name,
+              account: botAccount(u.email, b.name),
+              public_key: b.public_key,
+              key_options: botKeyOptions(b.source_cidr)
+            }))
           }))
         };
       })

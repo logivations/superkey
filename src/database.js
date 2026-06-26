@@ -61,6 +61,22 @@ db.exec(`
     FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
   );
+
+  -- Per-user bot keys (e.g. a "nemo" automation agent owned by a user).
+  -- Each bot is deployed as a separate, unprivileged Linux account
+  -- (<user>_<name>) on exactly the servers the owning user can already
+  -- reach. Access is derived from the owner, so a user can never grant a
+  -- bot more than they have themselves.
+  CREATE TABLE IF NOT EXISTS bot_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    public_key TEXT NOT NULL,
+    source_cidr TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE (user_id, name)
+  );
 `);
 
 // Migrations for existing databases

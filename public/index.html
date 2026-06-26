@@ -101,6 +101,7 @@
       <nav>
         <ul>
           <li class="active" data-tab="my-key">My Key</li>
+          <li data-tab="my-bots">My Bots</li>
           <li data-tab="my-access">My Access</li>
           <li class="admin-only hidden" data-tab="devices">Devices</li>
           <li class="admin-only hidden" data-tab="labels">Labels</li>
@@ -165,6 +166,55 @@
               </thead>
               <tbody id="my-servers-list"></tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- My Bots Tab -->
+        <div id="tab-my-bots" class="tab-content hidden">
+          <div class="card">
+            <h2>My Bots</h2>
+            <p style="margin-bottom: 15px; color: #666;">
+              A bot is an automation agent (e.g. <strong>nemo</strong>) that runs as <em>you</em>.
+              Each bot gets its own SSH key and logs in as a dedicated, unprivileged account
+              (<code>&lt;you&gt;_&lt;bot&gt;</code>) on exactly the devices <strong>you</strong> can already reach.
+              A bot can never have more access than you do, and you can revoke it any time.
+            </p>
+            <table>
+              <thead>
+                <tr><th>Bot</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th>Actions</th></tr>
+              </thead>
+              <tbody id="my-bots-list"></tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <h2>Add / Rotate a Bot Key</h2>
+            <div class="form-group">
+              <label for="bot-name">Bot name (a-z, 0-9, _ — e.g. <code>nemo</code>):</label>
+              <input type="text" id="bot-name" placeholder="nemo" style="width: 100%; padding: 8px;">
+            </div>
+            <div class="form-group">
+              <label for="bot-key">Bot's SSH public key:</label>
+              <textarea id="bot-key" placeholder="ssh-ed25519 AAAA... nemo@bot-host"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="bot-source">Restrict to source IP/CIDR (optional, recommended):</label>
+              <input type="text" id="bot-source" placeholder="e.g. 10.0.0.5 or 10.0.0.0/24" style="width: 100%; padding: 8px;">
+            </div>
+            <button class="btn btn-primary" onclick="addBot()">Save Bot</button>
+            <div id="bot-message" class="alert hidden" style="margin-top: 15px;"></div>
+
+            <div class="instructions" style="margin-top: 20px;">
+              <h4 style="margin-bottom: 10px;">Generate a key on the bot's host</h4>
+              <p style="margin-bottom: 10px; color: #666;">On the machine that runs the bot, create a dedicated keypair and paste the <code>.pub</code> here:</p>
+              <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 15px; font-family: monospace; font-size: 0.9rem;">
+                ssh-keygen -t ed25519 -f ~/.ssh/id_nemo -C "nemo bot"<br>
+                cat ~/.ssh/id_nemo.pub
+              </div>
+              <div style="background: #fff3cd; padding: 12px; border-radius: 4px; color: #856404;">
+                <strong>Keep the private key on the bot host only.</strong> Never reuse your personal key for a bot, and prefer setting a source restriction so a leaked key is useless elsewhere.
+              </div>
+            </div>
           </div>
         </div>
 
@@ -382,6 +432,7 @@
 
       document.getElementById('public-key').value = currentUser.public_key || '';
       loadMyServers();
+      loadMyBots();
       if (currentUser.isAdmin) {
         loadAllData();
         startAutoImport();
@@ -441,6 +492,64 @@
         await api('/api/me/public-key', { method: 'PUT', body: JSON.stringify({ publicKey: key }) });
         msg.className = 'alert alert-success';
         msg.textContent = 'Public key saved successfully!';
+      } catch (e) {
+        msg.className = 'alert alert-error';
+        msg.textContent = e.message;
+      }
+      msg.classList.remove('hidden');
+    }
+
+    // Bots
+    function escHtml(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function keySummary(key) {
+      const parts = String(key || '').trim().split(/\s+/);
+      if (parts.length < 2) return escHtml(key || '');
+      return `${escHtml(parts[0])} …${escHtml(parts[1].slice(-12))}`;
+    }
+
+    async function loadMyBots() {
+      let bots = [];
+      try { bots = await api('/api/me/bots'); } catch { /* not logged in / no bots */ }
+      const list = document.getElementById('my-bots-list');
+      list.innerHTML = bots.length ? bots.map(b => `
+        <tr>
+          <td>${escHtml(b.name)}</td>
+          <td><code>${escHtml(b.account)}</code></td>
+          <td style="font-family: monospace; font-size: 0.85rem;">${keySummary(b.public_key)}</td>
+          <td>${b.source_cidr ? escHtml(b.source_cidr) : '—'}</td>
+          <td><button class="btn btn-secondary" onclick="revokeBot(${b.id}, '${escHtml(b.name)}')">Revoke</button></td>
+        </tr>`).join('') : '<tr><td colspan="5">No bots yet</td></tr>';
+    }
+
+    async function addBot() {
+      const name = document.getElementById('bot-name').value.trim();
+      const publicKey = document.getElementById('bot-key').value.trim();
+      const sourceCidr = document.getElementById('bot-source').value.trim();
+      const msg = document.getElementById('bot-message');
+      try {
+        await api('/api/me/bots', { method: 'POST', body: JSON.stringify({ name, publicKey, sourceCidr }) });
+        msg.className = 'alert alert-success';
+        msg.textContent = `Bot "${name}" saved. It will be provisioned on your devices on the next deploy.`;
+        document.getElementById('bot-key').value = '';
+        loadMyBots();
+      } catch (e) {
+        msg.className = 'alert alert-error';
+        msg.textContent = e.message;
+      }
+      msg.classList.remove('hidden');
+    }
+
+    async function revokeBot(id, name) {
+      if (!confirm(`Revoke bot "${name}"? Its access is removed on the next deploy.`)) return;
+      const msg = document.getElementById('bot-message');
+      try {
+        await api('/api/me/bots/' + id, { method: 'DELETE' });
+        msg.className = 'alert alert-success';
+        msg.textContent = `Bot "${name}" revoked.`;
+        loadMyBots();
       } catch (e) {
         msg.className = 'alert alert-error';
         msg.textContent = e.message;
