@@ -324,7 +324,7 @@ setup_bot() {
 
     if ! id "$ACCT" &>/dev/null; then
         echo "      Creating bot account $ACCT..."
-        if ! sudo -n useradd -m -s /bin/bash -c "superkey bot: $BOT_NAME" "$ACCT" 2>&1; then
+        if ! sudo -n useradd -m -s /bin/bash -c "superkey bot $BOT_NAME" "$ACCT" 2>&1; then
             echo "      ERROR: Failed to create bot account"
             return 1
         fi
