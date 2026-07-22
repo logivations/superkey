@@ -196,6 +196,43 @@ fi
 sudo -n chgrp superkey /data
 sudo -n chmod 2775 /data
 
+# W2MO hosts: whdb containers run as the logi user (deploy/linux/
+# update_w2mo.sh), and every logi-group member must be able to back up /
+# restore / prune the DB folders without root. Re-own anything root-mode
+# containers left behind; setgid dirs keep the logi group on new subfolders.
+# The find probe keeps this a no-op on already-migrated hosts.
+if id logi &>/dev/null && [ -d /data/mysql_data ]; then
+    for d in /data/mysql_data /data/mysql_backup; do
+        [ -d "$d" ] || continue
+        if [ -n "$(sudo -n find "$d" ! -user logi -print -quit 2>/dev/null)" ] \
+           || [ "$(stat -c %a "$d" 2>/dev/null)" != "2775" ]; then
+            echo "  Migrating $d to logi ownership (group-writable)..."
+            sudo -n chown -R logi:logi "$d"
+            sudo -n chmod -R u+rwX,g+rwX "$d"
+            sudo -n find "$d" -type d -exec chmod g+s {} +
+            sudo -n chmod 2775 "$d"
+        fi
+    done
+
+    # rollback/autoupdate state + config: group-writable so the update and
+    # rollback scripts need no sudo for them either
+    sudo -n mkdir -p /data/w2mo_autoupdate
+    sudo -n chown -R logi:logi /data/w2mo_autoupdate
+    sudo -n chmod -R g+rwX /data/w2mo_autoupdate
+    sudo -n chmod 2775 /data/w2mo_autoupdate
+    if [ -d /data/appconfig_static ]; then
+        # top level only -- certs/ and the rest stay untouched
+        sudo -n chgrp logi /data/appconfig_static 2>/dev/null || true
+        sudo -n chmod g+rwxs /data/appconfig_static 2>/dev/null || true
+        for f in /data/appconfig_static/w2mo_autoupdate.conf /data/appconfig_static/server.settings; do
+            if [ -f "$f" ]; then
+                sudo -n chown logi:logi "$f"
+                sudo -n chmod g+rw "$f"
+            fi
+        done
+    fi
+fi
+
 # Grant the logi group scoped passwordless sudo for host troubleshooting
 # (reboots, service management, reading system logs). Managed accounts are
 # otherwise unprivileged; this replaces the implicit docker-based root path
