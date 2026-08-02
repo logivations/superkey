@@ -57,6 +57,18 @@ if ! grep -q '^DEPLOY_API_TOKEN=..*' "$ENV_FILE"; then
 fi
 set_env DEPLOY_PUBKEY "$PUBKEY"
 
+# --- ssh client config ----------------------------------------------------
+# Fleet hostnames (muc-amr.cs, ...) resolve via the ssh-configs in the
+# hostnames repo, same as on admin laptops. accept-new host keys: first
+# contact is trusted (TOFU), changed keys still fail loudly.
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+SSH_INCLUDE="Include /root/hostnames/ssh-configs/*.config"
+if ! grep -qxF "$SSH_INCLUDE" /root/.ssh/config 2>/dev/null; then
+    echo "Adding hostnames ssh-config include to /root/.ssh/config..."
+    printf '%s\n%s' "$SSH_INCLUDE" "$(cat /root/.ssh/config 2>/dev/null)" > /root/.ssh/config
+    chmod 600 /root/.ssh/config
+fi
+
 # --- systemd units ------------------------------------------------------------
 write_unit() {
     local path="$1" content="$2"

@@ -50,8 +50,10 @@ automatically by `auto-update.sh`) generates the machine keypair, writes
 
 Migrating servers enrolled under the old scheme (admin keys on
 `superkey-deploy`): run `./scripts/migrate-deploy-key.sh --from-file
-hosts.txt` from an admin machine — it replaces `superkey-deploy`'s
-authorized_keys with the machine key on each host.
+hosts.txt` from an admin machine — by default it ADDS the machine key to
+`superkey-deploy`'s authorized_keys (admin keys keep working); with
+`--replace` it swaps authorized_keys to the machine key only (final
+cutover).
 
 Manual runs are still possible:
 ```bash

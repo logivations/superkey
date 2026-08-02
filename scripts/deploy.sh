@@ -31,7 +31,9 @@ SERIAL=false
 STALE_ONLY=false
 
 # Extra ssh options; use the machine deploy key when configured.
-SSH_EXTRA_OPTS=()
+# accept-new: trust host keys on first contact (the runner starts with an
+# empty known_hosts); a CHANGED key still fails loudly.
+SSH_EXTRA_OPTS=(-o StrictHostKeyChecking=accept-new)
 if [ -n "$DEPLOY_SSH_KEY" ]; then
     SSH_EXTRA_OPTS+=(-i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes)
 fi
