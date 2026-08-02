@@ -109,13 +109,18 @@ WantedBy=timers.target"
 
 if [ "$UNITS_CHANGED" = true ]; then
     systemctl daemon-reload
+    # Enable only when units were (re)installed — an admin's manual
+    # `systemctl disable` of the timers must survive later runs.
+    systemctl enable --now superkey-deploy.timer superkey-deploy-full.timer >/dev/null 2>&1
 fi
-systemctl enable --now superkey-deploy.timer superkey-deploy-full.timer >/dev/null 2>&1
 
 # --- apply .env changes to the running container -------------------------------
 if [ "$CHANGED" = true ]; then
-    echo "Configuration changed — recreating containers with new env..."
-    (cd "$PROJECT_DIR" && docker-compose up -d) || echo "WARNING: docker-compose up failed; run it manually"
+    echo "Configuration changed — recreating app container with new env..."
+    # docker-compose v1 crashes with KeyError 'ContainerConfig' when it
+    # recreates a running container, so remove it first and create fresh.
+    (cd "$PROJECT_DIR" && docker-compose rm -sf superkey && docker-compose up -d) \
+        || echo "WARNING: docker-compose up failed; run it manually"
 fi
 
 echo "Deploy runner set up."
