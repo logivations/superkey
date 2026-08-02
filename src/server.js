@@ -790,9 +790,21 @@ app.get('/api/users', isAdmin, (req, res) => {
   const users = db.prepare(`
     SELECT u.id, u.email, u.name, u.public_key, u.created_at,
            (SELECT COUNT(*) FROM bot_keys bk WHERE bk.user_id = u.id) AS bot_count
-    FROM users u
+    FROM users u ORDER BY u.name COLLATE NOCASE
   `).all();
-  res.json(users);
+  // Group names inline so the access views can show how someone got their
+  // access without a request per user.
+  const rows = db.prepare(`
+    SELECT ug.user_id, g.name FROM user_groups ug
+    JOIN groups g ON g.id = ug.group_id
+    ORDER BY g.name COLLATE NOCASE
+  `).all();
+  const byUser = new Map();
+  for (const r of rows) {
+    if (!byUser.has(r.user_id)) byUser.set(r.user_id, []);
+    byUser.get(r.user_id).push(r.name);
+  }
+  res.json(users.map(u => ({ ...u, group_names: byUser.get(u.id) || [] })));
 });
 
 app.get('/api/users/:id', isAdmin, (req, res) => {
@@ -1036,9 +1048,21 @@ app.post('/api/servers/:hostname/deployed', isDeployApi, (req, res) => {
 });
 
 // Label routes
+// Labels carry their group grants inline: the UI renders "who can reach this
+// label" in a list, and fetching that per row was one request per label.
 app.get('/api/labels', isAuthenticated, (req, res) => {
-  const labels = db.prepare('SELECT * FROM labels').all();
-  res.json(labels);
+  const labels = db.prepare('SELECT * FROM labels ORDER BY name COLLATE NOCASE').all();
+  const grants = db.prepare(`
+    SELECT lg.label_id, g.id, g.name FROM label_groups lg
+    JOIN groups g ON g.id = lg.group_id
+    ORDER BY g.name COLLATE NOCASE
+  `).all();
+  const byLabel = new Map();
+  for (const r of grants) {
+    if (!byLabel.has(r.label_id)) byLabel.set(r.label_id, []);
+    byLabel.get(r.label_id).push({ id: r.id, name: r.name });
+  }
+  res.json(labels.map(l => ({ ...l, groups: byLabel.get(l.id) || [] })));
 });
 
 app.post('/api/labels', isAdmin, (req, res) => {
@@ -1058,7 +1082,10 @@ app.delete('/api/labels/:id', isAdmin, (req, res) => {
 
 // Group routes
 app.get('/api/groups', isAuthenticated, (req, res) => {
-  const groups = db.prepare('SELECT * FROM groups').all();
+  const groups = db.prepare(`
+    SELECT g.*, (SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id) AS member_count
+    FROM groups g ORDER BY g.name COLLATE NOCASE
+  `).all();
   res.json(groups);
 });
 

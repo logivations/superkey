@@ -3,1084 +3,1487 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Superkey - SSH Key Management</title>
+  <title>Superkey — SSH access</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔑</text></svg>">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-    header { background: #1a73e8; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
-    header h1 { font-size: 1.5rem; }
-    .user-info { display: flex; align-items: center; gap: 15px; }
-    .user-info span { font-size: 0.9rem; }
-    .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; transition: background 0.2s; }
-    .btn-primary { background: #1a73e8; color: white; }
-    .btn-primary:hover { background: #1557b0; }
-    .btn-secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
-    .btn-secondary:hover { background: #e8f0fe; }
-    .btn-danger { background: #dc3545; color: white; }
-    .btn-danger:hover { background: #c82333; }
-    .btn-small { padding: 4px 8px; font-size: 0.8rem; }
-    nav { background: #fff; border-bottom: 1px solid #ddd; padding: 0 20px; }
-    nav ul { list-style: none; display: flex; gap: 0; }
-    nav li { padding: 15px 20px; cursor: pointer; border-bottom: 3px solid transparent; }
-    nav li:hover { background: #f5f5f5; }
-    nav li.active { border-bottom-color: #1a73e8; color: #1a73e8; }
-    .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 20px; }
-    .card h2 { margin-bottom: 15px; font-size: 1.2rem; color: #333; }
-    .form-group { margin-bottom: 15px; }
-    .form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
-    .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1rem; }
-    .form-group textarea { min-height: 100px; font-family: monospace; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
-    th { background: #f9f9f9; font-weight: 500; }
-    tr:hover { background: #f5f5f5; }
-    .tag { display: inline-block; padding: 3px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 12px; font-size: 0.8rem; margin: 2px; }
-    .tag-green { background: #e6f4ea; color: #137333; }
-    .tag-yellow { background: #fef7cd; color: #856404; }
-    .tag-red { background: #f8d7da; color: #721c24; }
-    .sync-status { display: flex; align-items: center; gap: 5px; }
-    .sync-status .dot { width: 8px; height: 8px; border-radius: 50%; }
-    .sync-status .dot-green { background: #28a745; }
-    .sync-status .dot-yellow { background: #ffc107; }
-    .sync-status .dot-gray { background: #6c757d; }
-    .hidden { display: none !important; }
-    .login-container { display: flex; justify-content: center; align-items: center; height: 100vh; }
-    .login-box { text-align: center; }
-    .login-box h1 { margin-bottom: 20px; }
-    .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-    .modal-content { background: white; padding: 30px; border-radius: 8px; width: 500px; max-width: 90%; max-height: 80vh; overflow-y: auto; }
-    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-    .modal-close { font-size: 1.5rem; cursor: pointer; color: #666; }
-    .access-section { margin-top: 15px; }
-    .access-section h4 { margin-bottom: 10px; color: #666; }
-    .flex-row { display: flex; gap: 10px; align-items: center; }
-    .chip-input { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px; border: 1px solid #ddd; border-radius: 4px; min-height: 40px; }
-    .chip-input input { border: none; outline: none; flex: 1; min-width: 100px; padding: 5px; }
-    .alert { padding: 12px; border-radius: 4px; margin-bottom: 15px; }
-    .alert-success { background: #d4edda; color: #155724; }
-    .alert-error { background: #f8d7da; color: #721c24; }
-    .logos { display: flex; align-items: center; gap: 15px; }
-    .logos img { height: 32px; width: auto; }
-    .login-logos { display: flex; justify-content: center; align-items: center; gap: 20px; margin-bottom: 30px; }
-    .login-logos img { height: 40px; width: auto; }
-    .search-input { width: 100%; max-width: 320px; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; margin-bottom: 15px; }
-    .search-input:focus { outline: none; border-color: #1a73e8; }
+    :root {
+      --paper:     #F2F3EF;
+      --panel:     #FFFFFF;
+      --ink:       #16202A;
+      --ink-2:     #5A6670;
+      --rule:      #C7CEC7;
+      --blueprint: #0B5E8A;
+      --asbuilt:   #2F7A4F;
+      --revision:  #B4331F;
+
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--paper); color: var(--ink);
+      font-family: var(--sans); font-size: 14px; line-height: 1.45;
+      background-image:
+        linear-gradient(to right, rgba(11,94,138,.045) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(11,94,138,.045) 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid var(--blueprint); outline-offset: 2px; }
+    code { font-family: var(--mono); }
+
+    .frame { max-width: 1560px; margin: 0 auto; padding: 0 28px 72px; }
+
+    /* ---- login ---- */
+    .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .login-box { background: var(--panel); border: 2px solid var(--ink); padding: 40px 46px; text-align: center; }
+    .login-logos { display: flex; justify-content: center; align-items: center; gap: 22px; margin-bottom: 28px; }
+    .login-logos img { height: 34px; width: auto; }
+    .login-box h1 { margin: 0; font-family: var(--mono); font-size: 24px; letter-spacing: .22em;
+      text-transform: uppercase; font-weight: 700; }
+    .login-box p { color: var(--ink-2); font-size: 13px; margin: 8px 0 26px; }
+    .login-box .doc { display: block; margin-top: 22px; font-size: 12px; color: var(--ink-2); }
+
+    /* ---- top bar ---- */
+    .topbar { display: flex; align-items: baseline; gap: 18px; padding: 18px 0 14px;
+      border-bottom: 2px solid var(--ink); flex-wrap: wrap; }
+    .mark { font-family: var(--mono); font-weight: 700; font-size: 20px; letter-spacing: .2em; text-transform: uppercase; }
+    .topbar .sub { color: var(--ink-2); font-size: 12.5px; }
+    .topbar .logos { display: flex; align-items: center; gap: 12px; }
+    .topbar .logos img { height: 22px; width: auto; opacity: .85; }
+    .who { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--ink-2); }
+    .who b { color: var(--ink); font-weight: 600; }
+    .role-chip { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+      border: 1px solid var(--blueprint); color: var(--blueprint); padding: 1px 6px; }
+    .who a { color: var(--blueprint); }
+
+    /* ---- tabs ---- */
+    .tabs { display: flex; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+    .tab { appearance: none; background: none; border: 0; cursor: pointer;
+      font-family: var(--mono); text-transform: uppercase; letter-spacing: .12em;
+      font-size: 11.5px; font-weight: 600; color: var(--ink-2);
+      padding: 13px 18px 11px; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+    .tab:hover { color: var(--ink); }
+    .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--blueprint); }
+    .tab .count { color: var(--blueprint); margin-left: 7px; letter-spacing: 0; font-weight: 500; }
+    .tab-sep { width: 1px; background: var(--rule); margin: 10px 12px; }
+
+    .view { padding-top: 26px; }
+    .split { display: grid; grid-template-columns: minmax(0,1fr) 348px; gap: 28px; align-items: start; }
+
+    /* ---- cards ---- */
+    .card { border: 1px solid var(--rule); background: var(--panel); padding: 20px 22px; margin-bottom: 20px; }
+    .card > h2 { margin: 0 0 4px; font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+      text-transform: uppercase; font-weight: 700; }
+    .card p.lead { margin: 0 0 16px; color: var(--ink-2); font-size: 13px; max-width: 68ch; }
+    .card-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+    .card-head h2 { margin: 0; font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+      text-transform: uppercase; font-weight: 700; }
+    .card-head .spacer { flex: 1; }
+    .muted { color: var(--ink-2); font-size: 12.5px; }
+    .mono-sm { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); letter-spacing: .04em; }
+
+    /* ---- controls ---- */
+    .btn { appearance: none; cursor: pointer; font-family: var(--mono); font-size: 11px;
+      letter-spacing: .1em; text-transform: uppercase; font-weight: 600;
+      padding: 7px 12px; border: 1px solid var(--blueprint); background: var(--panel); color: var(--blueprint); }
+    .btn:hover { background: var(--blueprint); color: #fff; }
+    .btn.solid { background: var(--blueprint); color: #fff; }
+    .btn.solid:hover { background: var(--ink); border-color: var(--ink); }
+    .btn.quiet { border-color: var(--rule); color: var(--ink-2); }
+    .btn.quiet:hover { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .btn.danger { border-color: var(--revision); color: var(--revision); }
+    .btn.danger:hover { background: var(--revision); color: #fff; }
+    .btn:disabled { opacity: .5; cursor: default; }
+
+    input[type="text"], input[type="search"], select, textarea {
+      font-family: var(--mono); font-size: 13px; padding: 8px 10px;
+      border: 1px solid var(--rule); background: var(--paper); color: var(--ink); max-width: 100%;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--blueprint); outline: none; box-shadow: 0 0 0 2px rgba(11,94,138,.18);
+    }
+    textarea { width: 100%; min-height: 92px; resize: vertical; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--ink-2); margin-bottom: 6px; font-weight: 600; }
+    .field input[type="text"] { width: 100%; }
+    .filter-input { width: 320px; }
+
+    .alert { padding: 10px 13px; margin-top: 14px; font-size: 13px; border-left: 3px solid var(--blueprint);
+      background: var(--panel); border-top: 1px solid var(--rule); border-right: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule); }
+    .alert-error { border-left-color: var(--revision); color: var(--revision); }
+    .alert-success { border-left-color: var(--asbuilt); }
+
+    /* ---- tables ---- */
+    table.data { width: 100%; border-collapse: collapse; background: var(--panel); }
+    table.data th, table.data td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+    table.data th { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--ink-2); background: var(--paper); border-bottom: 1px solid var(--ink); font-weight: 600; }
+    table.data tbody tr:hover { background: #FAFBF8; }
+    table.data td.mono { font-family: var(--mono); font-size: 12px; }
+    table.data td.actions { white-space: nowrap; }
+    table.data td.actions .btn + .btn { margin-left: 5px; }
+    .tg { display: inline-block; font-family: var(--mono); font-size: 10.5px;
+      border: 1px solid var(--blueprint); color: var(--blueprint); padding: 1px 6px; margin: 1px 2px 1px 0; }
+    .tg.none { border-color: var(--ink-2); color: var(--ink-2); }
+    .tg.warn { border-color: var(--revision); color: var(--revision); }
+    .tg button { appearance: none; background: none; border: 0; cursor: pointer; color: inherit;
+      font: inherit; padding: 0 0 0 5px; }
+    .tg button:hover { color: var(--revision); }
+
+    /* ---- lens ---- */
+    .lens { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      border: 2px solid var(--ink); background: var(--panel); padding: 13px 16px; margin-bottom: 22px; }
+    .lens .cap { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
+    .lens select { min-width: 270px; font-weight: 600; }
+    .lens .spacer { flex: 1; }
+    .toggle { display: flex; align-items: center; gap: 7px; font-family: var(--mono);
+      font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); cursor: pointer; }
+
+    .planbar { display: flex; align-items: baseline; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+    .planbar .headline { font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+    .planbar .dim { color: var(--ink-2); font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; }
+    .legend { display: flex; gap: 16px; margin-left: auto; align-items: center; }
+    .legend span { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--ink-2);
+      font-family: var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    .swatch { width: 15px; height: 15px; border: 1px solid var(--rule); background: var(--panel); }
+    .swatch.lit { border-left: 4px solid var(--blueprint); }
+    .swatch.dim { opacity: .4; }
+
+    /* ---- site plan ---- */
+    .site { margin-bottom: 20px; }
+    .site-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+    .site-name { font-family: var(--mono); text-transform: uppercase; letter-spacing: .14em;
+      font-size: 12px; font-weight: 700; }
+    .site-n { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+    .site-rule { flex: 1; height: 1px; background: var(--rule); }
+    .site-reach { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; color: var(--blueprint); }
+    .site.none .site-name, .site.none .site-reach { color: var(--ink-2); }
+
+    .tiles { display: flex; flex-wrap: wrap; gap: 5px; }
+    .tile { position: relative; appearance: none; cursor: pointer;
+      font-family: var(--mono); font-size: 11.5px; line-height: 1;
+      padding: 6px 9px 7px; min-width: 60px; text-align: left;
+      background: var(--panel); color: var(--ink);
+      border: 1px solid var(--rule); border-left: 3px solid var(--rule);
+      transition: transform .12s ease, border-color .12s ease, opacity .12s ease; }
+    .tile .kind { display: block; font-size: 8.5px; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--ink-2); margin-bottom: 3px; }
+    .tile:hover { transform: translateY(-2px); border-color: var(--ink); }
+    .tile.lit { border-left-color: var(--blueprint); }
+    .tile.unlit { opacity: .38; }
+    .tile.unlit:hover { opacity: .8; }
+    .tile[aria-pressed="true"] { outline: 2px solid var(--blueprint); outline-offset: 1px; }
+    .tile.restricted::after { content: ""; position: absolute; top: 0; right: 0;
+      border-top: 9px solid var(--blueprint); border-left: 9px solid transparent; }
+    .tile.static { cursor: default; }
+    .tile.static:hover { transform: none; border-color: var(--rule); border-left-color: var(--blueprint); }
+
+    /* deploy state is secondary: an opt-in hairline, never the tile itself */
+    .show-deploy .tile { border-bottom-width: 3px; }
+    .show-deploy .tile.d-sync { border-bottom-color: var(--asbuilt); }
+    .show-deploy .tile.d-out  { border-bottom-color: var(--revision); }
+    .show-deploy .tile.d-new  { border-bottom-color: var(--rule); border-bottom-style: dotted; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tile, .tile:hover { transition: none; transform: none; }
+    }
+
+    /* ---- title block ---- */
+    .block { border: 2px solid var(--ink); background: var(--panel); }
+    .block.sticky { position: sticky; top: 18px; }
+    .block-head { font-family: var(--mono); text-transform: uppercase; letter-spacing: .16em;
+      font-size: 10.5px; font-weight: 700; padding: 9px 12px; background: var(--ink); color: var(--paper); }
+    .rowset { border-bottom: 1px solid var(--rule); padding: 4px 0; }
+    .rowset:last-child { border-bottom: 0; }
+    .brow { display: flex; align-items: baseline; padding: 5px 12px; gap: 10px; }
+    .brow dt { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--ink-2); flex: 1; }
+    .brow dd { margin: 0; font-family: var(--mono); font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    dl { margin: 0; }
+    .subject { padding: 11px 12px; border-bottom: 1px solid var(--rule); }
+    .subject .k { font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--ink-2); }
+    .subject .v { font-family: var(--mono); font-size: 15px; font-weight: 700; margin-top: 3px; word-break: break-word; }
+    .subject .m { font-size: 11.5px; color: var(--ink-2); margin-top: 2px; word-break: break-word; }
+    .chipwrap { padding: 0 12px 10px; }
+    .deploy-note { padding: 8px 12px; font-family: var(--mono); font-size: 10px;
+      letter-spacing: .06em; color: var(--ink-2); text-transform: uppercase; }
+
+    /* ---- detail ---- */
+    .detail { border: 1px solid var(--rule); background: var(--panel); margin-top: 18px; }
+    .detail-head { padding: 11px 13px; border-bottom: 1px solid var(--rule); }
+    .detail-host { font-family: var(--mono); font-size: 14px; font-weight: 700; word-break: break-all; }
+    .detail-body { padding: 12px 13px; }
+    .drow { display: flex; gap: 12px; padding: 3px 0; align-items: baseline; }
+    .drow .k { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--ink-2); width: 78px; flex: none; }
+    .drow .v { font-family: var(--mono); font-size: 12.5px; min-width: 0; word-break: break-word; }
+    .reach-head { display: flex; align-items: baseline; gap: 8px; padding: 11px 13px 6px; border-top: 1px solid var(--rule); }
+    .reach-head .n { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+    .reach-head .t { font-family: var(--mono); font-size: 10px; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--ink-2); }
+    .people { list-style: none; margin: 0; padding: 0 13px 12px; max-height: 300px; overflow-y: auto; }
+    .people li { padding: 4px 0; border-bottom: 1px dotted var(--rule); }
+    .people li:last-child { border-bottom: 0; }
+    .person { appearance: none; background: none; border: 0; padding: 0; cursor: pointer;
+      text-align: left; font: inherit; width: 100%; }
+    .person .nm { font-size: 12.5px; }
+    .person .via { font-family: var(--mono); font-size: 10px; color: var(--ink-2); letter-spacing: .04em; }
+    .person:hover .nm { color: var(--blueprint); text-decoration: underline; }
+    .detail .actions { display: flex; gap: 7px; padding: 11px 13px; border-top: 1px solid var(--rule); flex-wrap: wrap; }
+    .empty-detail, .nobody { padding: 18px 13px; color: var(--ink-2); font-size: 12.5px; }
+
+    /* ---- key ---- */
+    .keybox { border: 1px solid var(--rule); border-left: 3px solid var(--asbuilt); padding: 12px 14px;
+      font-family: var(--mono); font-size: 12.5px; background: var(--paper); word-break: break-all; }
+    .keybox.empty { border-left-color: var(--revision); }
+    .keybox .meta { color: var(--ink-2); font-size: 11.5px; margin-top: 5px; letter-spacing: .04em; }
+    pre.cmd { margin: 8px 0 0; padding: 11px 13px; background: var(--ink); color: #E8EDE8;
+      font-family: var(--mono); font-size: 12px; overflow-x: auto; }
+    summary { cursor: pointer; font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--blueprint); }
+    .warnbox { border: 1px solid var(--revision); border-left: 3px solid var(--revision);
+      padding: 11px 13px; font-size: 12.5px; margin-top: 14px; }
+
+    /* ---- modals ---- */
+    .modal { position: fixed; inset: 0; background: rgba(22,32,42,.55);
+      display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
+    .modal-content { background: var(--panel); border: 2px solid var(--ink);
+      width: 540px; max-width: 100%; max-height: 86vh; overflow-y: auto; }
+    .modal-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+      background: var(--ink); color: var(--paper); }
+    .modal-head h3 { margin: 0; font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+      text-transform: uppercase; font-weight: 700; }
+    .modal-close { margin-left: auto; appearance: none; background: none; border: 1px solid transparent;
+      color: var(--paper); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 7px; }
+    .modal-close:hover { border-color: var(--paper); }
+    .modal-body { padding: 18px 16px; }
+    .flex-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .readout { padding: 9px 11px; background: var(--paper); border: 1px solid var(--rule);
+      font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
   </style>
 </head>
 <body>
-  <div id="app">
-    <!-- Login View -->
-    <div id="login-view" class="login-container hidden">
-      <div class="login-box">
-        <div class="login-logos">
-          <img src="/images/logivations-1-1024x256.webp" alt="Logivations">
-          <img src="/images/logo_PixelRobotics-1-scaled.png" alt="PixelRobotics">
-        </div>
-        <h1>Superkey</h1>
-        <p style="margin-bottom: 20px; color: #666;">SSH Key Management Tool</p>
-        <a href="/auth/google" class="btn btn-primary">Sign in with Google</a>
-        <p style="margin-top: 20px;"><a href="https://coda.io/d/_dFse1sx3aih/Superkey_su1T4vqT" target="_blank" style="color: #666; font-size: 0.9rem;">Documentation</a></p>
-      </div>
+
+<!-- ================= LOGIN ================= -->
+<div id="login-view" class="login" hidden>
+  <div class="login-box">
+    <div class="login-logos">
+      <img src="/images/logivations-1-1024x256.webp" alt="Logivations">
+      <img src="/images/logo_PixelRobotics-1-scaled.png" alt="Pixel Robotics">
     </div>
+    <h1>Superkey</h1>
+    <p>SSH access for the fleet</p>
+    <a href="/auth/google" class="btn solid">Sign in with Google</a>
+    <a class="doc" href="https://coda.io/d/_dFse1sx3aih/Superkey_su1T4vqT" target="_blank" rel="noopener">Documentation</a>
+  </div>
+</div>
 
-    <!-- Main App -->
-    <div id="main-view" class="hidden">
-      <header>
-        <div class="logos">
-          <img src="/images/logivations-1-1024x256.webp" alt="Logivations">
-          <img src="/images/logo_PixelRobotics-1-scaled.png" alt="PixelRobotics">
-          <h1>Superkey</h1>
-        </div>
-        <div class="user-info">
-          <span id="user-name"></span>
-          <span id="admin-badge" class="tag tag-green hidden">Admin</span>
-          <a href="/auth/logout" class="btn btn-secondary">Logout</a>
-        </div>
-      </header>
+<!-- ================= APP ================= -->
+<div id="main-view" class="frame" hidden>
+  <header class="topbar">
+    <div class="mark">Superkey</div>
+    <div class="logos">
+      <img src="/images/logivations-1-1024x256.webp" alt="Logivations">
+      <img src="/images/logo_PixelRobotics-1-scaled.png" alt="Pixel Robotics">
+    </div>
+    <div class="who">
+      <span><b id="user-name"></b></span>
+      <span id="admin-badge" class="role-chip" hidden>Admin</span>
+      <a href="/auth/logout">Sign out</a>
+    </div>
+  </header>
 
-      <nav>
-        <ul>
-          <li class="active" data-tab="my-key">My Key</li>
-          <li data-tab="my-bots">My Agents</li>
-          <li data-tab="team-agents">Team Agents</li>
-          <li data-tab="my-access">My Access</li>
-          <li class="admin-only hidden" data-tab="devices">Devices</li>
-          <li class="admin-only hidden" data-tab="labels">Labels</li>
-          <li class="admin-only hidden" data-tab="groups">Groups</li>
-          <li class="admin-only hidden" data-tab="users">Users</li>
-          <li class="admin-only hidden" data-tab="access-admin">Access Admin</li>
-        </ul>
-      </nav>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button class="tab" role="tab" id="t-mine"   aria-controls="v-mine"   aria-selected="true">My access</button>
+    <button class="tab" role="tab" id="t-bots"   aria-controls="v-bots"   aria-selected="false">My agents</button>
+    <button class="tab" role="tab" id="t-team"   aria-controls="v-team"   aria-selected="false">Team agents</button>
+    <div class="tab-sep admin-only" aria-hidden="true" hidden></div>
+    <button class="tab admin-only" role="tab" id="t-access" aria-controls="v-access" aria-selected="false" hidden>Who can reach what</button>
+    <button class="tab admin-only" role="tab" id="t-labels" aria-controls="v-labels" aria-selected="false" hidden>Labels</button>
+    <button class="tab admin-only" role="tab" id="t-groups" aria-controls="v-groups" aria-selected="false" hidden>Groups</button>
+    <button class="tab admin-only" role="tab" id="t-users"  aria-controls="v-users"  aria-selected="false" hidden>Users</button>
+  </nav>
 
-      <div class="container">
-        <!-- My Key Tab -->
-        <div id="tab-my-key" class="tab-content">
+  <main>
+    <!-- ---------- MY ACCESS ---------- -->
+    <section class="view" id="v-mine" role="tabpanel" aria-labelledby="t-mine">
+      <div class="split">
+        <div>
           <div class="card">
-            <h2>My SSH Public Key</h2>
-            <div class="form-group">
-              <label for="public-key">Paste your SSH public key here:</label>
-              <textarea id="public-key" placeholder="ssh-ed25519 AAAA... user@hostname"></textarea>
-            </div>
-            <button class="btn btn-primary" onclick="savePublicKey()">Save Key</button>
-            <div id="key-message" class="alert hidden" style="margin-top: 15px;"></div>
-          </div>
-
-          <div class="card">
-            <h2>How to Get Your SSH Public Key</h2>
-
-            <div class="instructions">
-              <h4 style="margin-bottom: 10px;">If you already have an SSH key:</h4>
-              <p style="margin-bottom: 10px; color: #666;">Your public key is usually located at <code>~/.ssh/id_ed25519.pub</code> or <code>~/.ssh/id_rsa.pub</code></p>
-
-              <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 15px; font-family: monospace; font-size: 0.9rem;">
-                <strong>Linux/macOS:</strong><br>
-                cat ~/.ssh/id_ed25519.pub<br><br>
-                <strong>Windows (PowerShell):</strong><br>
-                Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub
+            <h2>Your SSH key</h2>
+            <p class="lead">One key, uploaded once. Superkey installs it on every device you can reach and
+              removes it everywhere the moment your access changes.</p>
+            <div id="key-state"></div>
+            <details id="key-editor" style="margin-top:14px">
+              <summary id="key-editor-summary">Replace this key</summary>
+              <div style="margin-top:12px">
+                <textarea id="public-key" placeholder="ssh-ed25519 AAAA… you@laptop"
+                  aria-label="Your SSH public key"></textarea>
+                <div style="margin-top:10px"><button class="btn solid" id="save-key">Save key</button></div>
               </div>
+            </details>
+            <div id="key-message" class="alert" hidden></div>
+          </div>
 
-              <h4 style="margin-bottom: 10px;">If you need to generate a new key:</h4>
-              <p style="margin-bottom: 10px; color: #666;">Run the following command in your terminal:</p>
-
-              <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 15px; font-family: monospace; font-size: 0.9rem;">
-                ssh-keygen -t ed25519 -C "your_email@lvairo.com"
-              </div>
-
-              <p style="margin-bottom: 10px; color: #666;">Then press Enter to accept the default location, and optionally set a passphrase.</p>
-
-              <p style="margin-bottom: 10px; color: #666;">After generating, copy the contents of the <code>.pub</code> file (the public key) and paste it above.</p>
-
-              <div style="background: #fff3cd; padding: 12px; border-radius: 4px; color: #856404;">
-                <strong>Important:</strong> Only share your <strong>public key</strong> (.pub file). Never share your private key (the file without .pub extension).
-              </div>
+          <div class="card">
+            <h2>Finding or making a key</h2>
+            <p class="lead">Your public key is usually at <code>~/.ssh/id_ed25519.pub</code>. Print it with:</p>
+            <pre class="cmd">cat ~/.ssh/id_ed25519.pub                                  <span style="color:#8FB4C7"># Linux, macOS</span>
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub           <span style="color:#8FB4C7"># Windows PowerShell</span></pre>
+            <p class="lead" style="margin-top:16px">No key yet? Generate one on the machine you'll connect from,
+              accept the default location, and optionally set a passphrase.</p>
+            <pre class="cmd">ssh-keygen -t ed25519 -C "you@lvairo.com"</pre>
+            <div class="warnbox">
+              Upload only the <b>public</b> half — the file ending in <code>.pub</code>.
+              The private key never leaves your machine.
             </div>
           </div>
+
+          <div class="planbar">
+            <span class="headline" id="mine-headline">Loading…</span>
+            <span class="dim" id="mine-sub"></span>
+          </div>
+          <div id="mine-sites"></div>
+          <p class="muted" id="mine-empty" hidden>
+            No devices yet. Access comes from your Google Workspace groups — ask an admin to attach
+            a label your group can reach.
+          </p>
         </div>
 
-        <!-- My Access Tab -->
-        <div id="tab-my-access" class="tab-content hidden">
-          <div class="card">
-            <h2>Devices I Have Access To</h2>
-            <table>
-              <thead>
-                <tr><th>Hostname</th><th>Description</th><th>Sync Status</th></tr>
-              </thead>
-              <tbody id="my-servers-list"></tbody>
-            </table>
+        <aside>
+          <div class="block sticky">
+            <div class="block-head">What your key opens</div>
+            <div class="rowset">
+              <dl>
+                <div class="brow"><dt>Devices</dt><dd id="m-dev">—</dd></div>
+                <div class="brow"><dt>Sites</dt><dd id="m-sites">—</dd></div>
+              </dl>
+            </div>
+            <div class="rowset">
+              <div class="brow"><dt>Your groups</dt></div>
+              <div class="chipwrap" id="m-groups"></div>
+            </div>
+            <div class="deploy-note" id="m-deploy"></div>
           </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ---------- MY AGENTS ---------- -->
+    <section class="view" id="v-bots" role="tabpanel" aria-labelledby="t-bots" hidden>
+      <div class="card">
+        <h2>My agents</h2>
+        <p class="lead">A personal agent (your <strong>nemo</strong>, for instance) runs as you. It gets its own
+          key and logs in as a dedicated unprivileged account, <code>&lt;you&gt;_&lt;agent&gt;</code>, on exactly the
+          devices you can already reach. It can never have more access than you do, and you can revoke it at
+          any time. Shared agents live in the Team agents tab.</p>
+        <table class="data">
+          <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th></th></tr></thead>
+          <tbody id="bots-list"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Add or rotate an agent key</h2>
+        <p class="lead">Submitting an existing name rotates that agent's key.</p>
+        <div class="field">
+          <label for="bot-name">Agent name — a–z, 0–9, underscore</label>
+          <input type="text" id="bot-name" placeholder="nemo">
         </div>
-
-        <!-- My Agents (personal) Tab -->
-        <div id="tab-my-bots" class="tab-content hidden">
-          <div class="card">
-            <h2>My Agents</h2>
-            <p style="margin-bottom: 15px; color: #666;">
-              A personal agent (e.g. your <strong>nemo</strong>) runs as <em>you</em>.
-              Each agent gets its own SSH key and logs in as a dedicated, unprivileged account
-              (<code>&lt;you&gt;_&lt;agent&gt;</code>) on exactly the devices <strong>you</strong> can already reach.
-              A personal agent can never have more access than you do, and you can revoke it any time.
-              (Shared <em>team agents</em>, with label-based access, live in the Team Agents tab.)
-            </p>
-            <table>
-              <thead>
-                <tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="my-bots-list"></tbody>
-            </table>
-          </div>
-
-          <div class="card">
-            <h2>Add / Rotate an Agent Key</h2>
-            <div class="form-group">
-              <label for="bot-name">Agent name (a-z, 0-9, _ — e.g. <code>nemo</code>):</label>
-              <input type="text" id="bot-name" placeholder="nemo" style="width: 100%; padding: 8px;">
-            </div>
-            <div class="form-group">
-              <label for="bot-key">Agent's SSH public key:</label>
-              <textarea id="bot-key" placeholder="ssh-ed25519 AAAA... nemo@agent-host"></textarea>
-            </div>
-            <div class="form-group">
-              <label for="bot-source">Restrict to source IP/CIDR (optional, recommended):</label>
-              <input type="text" id="bot-source" placeholder="e.g. 10.0.0.5 or 10.0.0.0/24" style="width: 100%; padding: 8px;">
-            </div>
-            <button class="btn btn-primary" onclick="addBot()">Save Agent</button>
-            <div id="bot-message" class="alert hidden" style="margin-top: 15px;"></div>
-
-            <div class="instructions" style="margin-top: 20px;">
-              <h4 style="margin-bottom: 10px;">Generate a key on the agent's host</h4>
-              <p style="margin-bottom: 10px; color: #666;">On the machine that runs the agent, create a dedicated keypair and paste the <code>.pub</code> here:</p>
-              <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 15px; font-family: monospace; font-size: 0.9rem;">
-                ssh-keygen -t ed25519 -f ~/.ssh/id_nemo -C "nemo agent"<br>
-                cat ~/.ssh/id_nemo.pub
-              </div>
-              <div style="background: #fff3cd; padding: 12px; border-radius: 4px; color: #856404;">
-                <strong>Keep the private key on the agent host only.</strong> Never reuse your personal key for an agent, and prefer setting a source restriction so a leaked key is useless elsewhere.
-              </div>
-            </div>
-          </div>
+        <div class="field">
+          <label for="bot-key">The agent's SSH public key</label>
+          <textarea id="bot-key" placeholder="ssh-ed25519 AAAA… nemo@agent-host"></textarea>
         </div>
-
-        <!-- Team Agents Tab -->
-        <div id="tab-team-agents" class="tab-content hidden">
-          <div class="card">
-            <h2>Team Agents</h2>
-            <p style="margin-bottom: 15px; color: #666;">
-              Team agents are shared nemo agents. They register themselves automatically
-              with <strong>no access</strong>; access is granted per <strong>label</strong> —
-              an agent can reach exactly the devices carrying its labels, as the unprivileged
-              account <code>agent_&lt;name&gt;</code>. You can attach or remove the labels
-              <strong>you</strong> have access to yourself (admins: any label). Changes apply
-              on the next deploy.
-            </p>
-            <div id="agent-message" class="alert hidden" style="margin-bottom: 15px;"></div>
-            <table>
-              <thead>
-                <tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Labels</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="team-agents-list"></tbody>
-            </table>
-          </div>
+        <div class="field">
+          <label for="bot-source">Restrict to source IP or CIDR — optional, recommended</label>
+          <input type="text" id="bot-source" placeholder="10.0.0.5 or 10.0.0.0/24">
         </div>
+        <button class="btn solid" id="save-bot">Save agent</button>
+        <div id="bot-message" class="alert" hidden></div>
 
-        <!-- Devices Tab (Admin) -->
-        <div id="tab-devices" class="tab-content hidden">
-          <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-              <h2>Devices</h2>
-              <span id="ssh-configs-commit-date" style="color: #666; font-size: 0.9em;">Loading SSH configs...</span>
-            </div>
-            <div id="import-status" class="alert hidden" style="margin-bottom: 15px;"></div>
-            <input type="search" id="filter-devices" class="search-input" placeholder="Filter by hostname, description or label…" oninput="setFilter('devices', this.value)">
-            <table>
-              <thead>
-                <tr><th>Hostname</th><th>Description</th><th>Labels</th><th>Sync Status</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="servers-list"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Labels Tab (Admin) -->
-        <div id="tab-labels" class="tab-content hidden">
-          <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-              <h2>Labels</h2>
-              <button class="btn btn-primary" onclick="showAddLabelModal()">Add Label</button>
-            </div>
-            <input type="search" id="filter-labels" class="search-input" placeholder="Filter by label name…" oninput="setFilter('labels', this.value)">
-            <table>
-              <thead>
-                <tr><th>Name</th><th>Groups with Access</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="labels-list"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Groups Tab (Admin) -->
-        <div id="tab-groups" class="tab-content hidden">
-          <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-              <h2>Groups</h2>
-              <button class="btn btn-secondary" onclick="syncAllGroups()">Sync from Google</button>
-            </div>
-            <div id="sync-status" class="alert hidden" style="margin-bottom: 15px;"></div>
-            <p style="margin-bottom: 15px; color: #666; font-size: 0.9rem;">
-              Group membership is synced from Google Workspace. Set up a service account for automatic sync.
-            </p>
-            <input type="search" id="filter-groups" class="search-input" placeholder="Filter by group name or email…" oninput="setFilter('groups', this.value)">
-            <table>
-              <thead>
-                <tr><th>Name</th><th>Google Group Email</th><th>Members</th></tr>
-              </thead>
-              <tbody id="groups-list"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Users Tab (Admin) -->
-        <div id="tab-users" class="tab-content hidden">
-          <div class="card">
-            <h2>Users</h2>
-            <input type="search" id="filter-users" class="search-input" placeholder="Filter by name or email…" oninput="setFilter('users', this.value)">
-            <table>
-              <thead>
-                <tr><th>Name</th><th>Email</th><th>Has Public Key</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="users-list"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Access Admin Tab -->
-        <div id="tab-access-admin" class="tab-content hidden">
-          <div class="card">
-            <h2>Admin: View User Access</h2>
-            <div class="form-group">
-              <label>Select a user:</label>
-              <select id="admin-user-select" onchange="loadUserServers()">
-                <option value="">-- Select User --</option>
-              </select>
-            </div>
-            <table id="admin-user-servers" class="hidden">
-              <thead>
-                <tr><th>Hostname</th><th>Description</th><th>Sync Status</th></tr>
-              </thead>
-              <tbody id="admin-user-servers-list"></tbody>
-            </table>
-          </div>
-
-          <div class="card">
-            <h2>Admin: View Device Access</h2>
-            <div class="form-group">
-              <label>Select a device:</label>
-              <select id="admin-server-select" onchange="loadServerAccess()">
-                <option value="">-- Select Device --</option>
-              </select>
-            </div>
-            <div id="server-access-info" class="hidden">
-              <div class="access-section">
-                <h4>Users with Access</h4>
-                <table>
-                  <thead><tr><th>User</th><th>Email</th><th>Via Group</th><th>Has Key</th></tr></thead>
-                  <tbody id="server-access-users"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
+        <p class="lead" style="margin:20px 0 0">Generate the keypair on the machine that runs the agent:</p>
+        <pre class="cmd">ssh-keygen -t ed25519 -f ~/.ssh/id_nemo -C "nemo agent"
+cat ~/.ssh/id_nemo.pub</pre>
+        <div class="warnbox">
+          Keep the private key on the agent host. Never reuse your own key for an agent, and set a source
+          restriction so a leaked key is useless from anywhere else.
         </div>
       </div>
+    </section>
+
+    <!-- ---------- TEAM AGENTS ---------- -->
+    <section class="view" id="v-team" role="tabpanel" aria-labelledby="t-team" hidden>
+      <div class="card">
+        <h2>Team agents</h2>
+        <p class="lead">Shared nemo agents. They register themselves with no access; you grant it by attaching
+          <strong>labels</strong>, and the agent then reaches every device carrying one, as
+          <code>agent_&lt;name&gt;</code>. You can attach the labels you hold yourself; admins can attach any.
+          Changes take effect on the next deploy.</p>
+        <div id="agent-message" class="alert" hidden></div>
+        <table class="data">
+          <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Labels</th><th></th></tr></thead>
+          <tbody id="team-list"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ---------- WHO CAN REACH WHAT ---------- -->
+    <section class="view" id="v-access" role="tabpanel" aria-labelledby="t-access" hidden>
+      <div class="lens">
+        <label class="cap" for="lens-select">Show what</label>
+        <select id="lens-select" aria-label="Choose a person, group or label"></select>
+        <span class="cap">can reach</span>
+        <span class="spacer"></span>
+        <input type="search" id="plan-filter" class="filter-input" placeholder="filter by hostname or site…"
+          aria-label="Filter the plan">
+        <label class="toggle"><input type="checkbox" id="deploy-toggle"> Show deploy state</label>
+      </div>
+
+      <div class="split">
+        <div>
+          <div class="planbar">
+            <span class="headline" id="plan-headline">Loading…</span>
+            <span class="dim" id="plan-sub"></span>
+            <span class="legend" aria-hidden="true">
+              <span><i class="swatch lit"></i>Can reach</span>
+              <span><i class="swatch dim"></i>Cannot</span>
+            </span>
+          </div>
+          <div id="plan-sites"></div>
+          <p class="muted" id="plan-empty" hidden>Nothing matches that filter.</p>
+          <p class="mono-sm" id="import-status" style="margin-top:18px"></p>
+        </div>
+
+        <aside>
+          <div class="block sticky">
+            <div class="block-head">Access summary</div>
+            <div class="subject">
+              <div class="k" id="subj-kind">—</div>
+              <div class="v" id="subj-name">—</div>
+              <div class="m" id="subj-meta"></div>
+            </div>
+            <div class="rowset">
+              <dl>
+                <div class="brow"><dt>Devices reachable</dt><dd id="s-dev">—</dd></div>
+                <div class="brow"><dt>Sites</dt><dd id="s-sites">—</dd></div>
+                <div class="brow"><dt>Of the fleet</dt><dd id="s-pct">—</dd></div>
+              </dl>
+            </div>
+            <div class="rowset">
+              <div class="brow"><dt id="via-label">Granted by</dt></div>
+              <div class="chipwrap" id="s-via"></div>
+            </div>
+            <div class="deploy-note" id="s-deploy"></div>
+          </div>
+
+          <div class="detail" id="device-detail">
+            <div class="empty-detail">Pick a device to see everyone who can reach it, and how.</div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ---------- LABELS ---------- -->
+    <section class="view" id="v-labels" role="tabpanel" aria-labelledby="t-labels" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Labels</h2>
+          <span class="spacer"></span>
+          <input type="search" id="labels-filter" class="filter-input" placeholder="filter by label or group…"
+            aria-label="Filter labels">
+          <button class="btn solid" id="add-label-btn">Add label</button>
+        </div>
+        <p class="lead">A label ties devices to groups. Devices carry labels; groups are granted labels;
+          people reach a device when one of their groups holds one of its labels.</p>
+        <div id="label-message" class="alert" hidden></div>
+        <table class="data">
+          <thead><tr><th>Label</th><th>Devices</th><th>Groups with access</th><th></th></tr></thead>
+          <tbody id="labels-list"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ---------- GROUPS ---------- -->
+    <section class="view" id="v-groups" role="tabpanel" aria-labelledby="t-groups" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Groups</h2>
+          <span class="spacer"></span>
+          <input type="search" id="groups-filter" class="filter-input" placeholder="filter by group or email…"
+            aria-label="Filter groups">
+          <button class="btn" id="sync-groups-btn">Sync from Google</button>
+        </div>
+        <p class="lead">Membership is synced from Google Workspace and can't be edited here.</p>
+        <div id="sync-message" class="alert" hidden></div>
+        <table class="data">
+          <thead><tr><th>Group</th><th>Google group</th><th>Members</th><th>Labels held</th></tr></thead>
+          <tbody id="groups-list"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ---------- USERS ---------- -->
+    <section class="view" id="v-users" role="tabpanel" aria-labelledby="t-users" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Users</h2>
+          <span class="spacer"></span>
+          <input type="search" id="users-filter" class="filter-input" placeholder="filter by name, email or group…"
+            aria-label="Filter users">
+        </div>
+        <table class="data">
+          <thead><tr><th>Name</th><th>Email</th><th>Key</th><th>Groups</th><th></th></tr></thead>
+          <tbody id="users-list"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ================= MODALS ================= -->
+<div class="modal" id="device-modal" role="dialog" aria-modal="true" aria-labelledby="device-modal-title" hidden>
+  <div class="modal-content">
+    <div class="modal-head">
+      <h3 id="device-modal-title">Device labels</h3>
+      <button class="modal-close" data-close="device-modal" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Hostname</label><div class="readout" id="dm-host"></div></div>
+      <div class="field"><label>Description</label><div class="readout" id="dm-desc"></div></div>
+      <div class="field">
+        <label for="dm-add">Add a label</label>
+        <div class="flex-row">
+          <select id="dm-add"></select>
+          <button class="btn solid" id="dm-add-btn">Add</button>
+        </div>
+      </div>
+      <div class="field"><label>Attached</label><div id="dm-labels"></div></div>
+      <div id="dm-message" class="alert" hidden></div>
     </div>
   </div>
+</div>
 
-  <!-- Manage Device Labels Modal -->
-  <div id="server-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Manage Device Labels</h3>
-        <span class="modal-close" onclick="closeModal('server-modal')">&times;</span>
-      </div>
-      <input type="hidden" id="server-id">
-      <div class="form-group">
-        <label>Hostname</label>
-        <div style="padding: 10px; background: #f5f5f5; border-radius: 4px; font-family: monospace;" id="server-hostname-display"></div>
-      </div>
-      <div class="form-group">
-        <label>Description</label>
-        <div style="padding: 10px; background: #f5f5f5; border-radius: 4px; color: #666;" id="server-description-display">-</div>
-      </div>
-      <div class="access-section">
-        <h4>Labels</h4>
-        <div class="flex-row" style="margin-bottom: 10px;">
-          <select id="add-label-to-server">
-            <option value="">-- Add Label --</option>
-          </select>
-          <button class="btn btn-small btn-primary" onclick="addLabelToServer()">Add</button>
-        </div>
-        <div id="server-labels-list"></div>
-      </div>
+<div class="modal" id="label-modal" role="dialog" aria-modal="true" aria-labelledby="label-modal-title" hidden>
+  <div class="modal-content">
+    <div class="modal-head">
+      <h3 id="label-modal-title">Add label</h3>
+      <button class="modal-close" data-close="label-modal" aria-label="Close">&times;</button>
     </div>
-  </div>
-
-  <!-- Add Label Modal -->
-  <div id="label-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Add Label</h3>
-        <span class="modal-close" onclick="closeModal('label-modal')">&times;</span>
-      </div>
-      <form onsubmit="saveLabel(event)">
-        <div class="form-group">
-          <label>Label Name</label>
-          <input type="text" id="label-name" required>
+    <div class="modal-body">
+      <form id="label-form">
+        <div class="field">
+          <label for="label-name">Label name</label>
+          <input type="text" id="label-name" required autocomplete="off">
         </div>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="submit" class="btn solid">Add label</button>
       </form>
+      <div id="lm-message" class="alert" hidden></div>
     </div>
   </div>
+</div>
 
-  <!-- Manage Team Agent Labels Modal -->
-  <div id="agent-labels-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Labels: <span id="agent-labels-name"></span></h3>
-        <span class="modal-close" onclick="closeModal('agent-labels-modal')">&times;</span>
-      </div>
-      <input type="hidden" id="agent-labels-id">
-      <p style="margin-bottom: 15px; color: #666; font-size: 0.9rem;">
-        The agent can reach every device carrying one of these labels.
-        You can only attach labels you have access to yourself.
-      </p>
-      <div class="access-section">
-        <h4>Labels</h4>
-        <div class="flex-row" style="margin-bottom: 10px;">
-          <select id="add-label-to-agent">
-            <option value="">-- Add Label --</option>
-          </select>
-          <button class="btn btn-small btn-primary" onclick="addLabelToAgent()">Add</button>
+<div class="modal" id="grant-modal" role="dialog" aria-modal="true" aria-labelledby="grant-modal-title" hidden>
+  <div class="modal-content">
+    <div class="modal-head">
+      <h3 id="grant-modal-title">Label access</h3>
+      <button class="modal-close" data-close="grant-modal" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted" id="gm-intro"></p>
+      <div class="field" style="margin-top:14px">
+        <label for="gm-add">Grant to a group</label>
+        <div class="flex-row">
+          <select id="gm-add"></select>
+          <button class="btn solid" id="gm-add-btn">Add</button>
         </div>
-        <div id="agent-labels-list"></div>
       </div>
+      <div class="field"><label>Groups with access</label><div id="gm-groups"></div></div>
+      <div id="gm-message" class="alert" hidden></div>
     </div>
   </div>
+</div>
 
-  <!-- Manage Label Access Modal -->
-  <div id="label-access-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Manage Access: <span id="label-access-name"></span></h3>
-        <span class="modal-close" onclick="closeModal('label-access-modal')">&times;</span>
-      </div>
-      <input type="hidden" id="label-access-id">
-      <div class="access-section">
-        <h4>Groups with Access</h4>
-        <div class="flex-row" style="margin-bottom: 10px;">
-          <select id="add-group-to-label">
-            <option value="">-- Add Group --</option>
-          </select>
-          <button class="btn btn-small btn-primary" onclick="addGroupToLabel()">Add</button>
+<div class="modal" id="agent-modal" role="dialog" aria-modal="true" aria-labelledby="agent-modal-title" hidden>
+  <div class="modal-content">
+    <div class="modal-head">
+      <h3 id="agent-modal-title">Agent labels</h3>
+      <button class="modal-close" data-close="agent-modal" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted">The agent reaches every device carrying one of these labels. You can attach
+        the labels you have access to yourself.</p>
+      <div class="field" style="margin-top:14px">
+        <label for="am-add">Attach a label</label>
+        <div class="flex-row">
+          <select id="am-add"></select>
+          <button class="btn solid" id="am-add-btn">Add</button>
         </div>
-        <div id="label-groups-list"></div>
       </div>
+      <div class="field"><label>Attached</label><div id="am-labels"></div></div>
+      <div id="am-message" class="alert" hidden></div>
     </div>
   </div>
+</div>
 
-  <script>
-    let currentUser = null;
-    let allUsers = [];
-    let allGroups = [];
-    let allLabels = [];
-    let allServers = [];
+<script>
+'use strict';
 
-    // Initialize
-    async function init() {
-      try {
-        const res = await fetch('/api/me');
-        if (res.ok) {
-          currentUser = await res.json();
-          showMainView();
-        } else {
-          showLoginView();
-        }
-      } catch {
-        showLoginView();
-      }
-    }
+/* ============ helpers ============ */
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-    function showLoginView() {
-      document.getElementById('login-view').classList.remove('hidden');
-      document.getElementById('main-view').classList.add('hidden');
-    }
+async function api(url, options = {}) {
+  const res = await fetch(url, {
+    credentials: 'same-origin',
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed (${res.status})`);
+  }
+  return res.status === 204 ? null : res.json();
+}
 
-    function showMainView() {
-      document.getElementById('login-view').classList.add('hidden');
-      document.getElementById('main-view').classList.remove('hidden');
-      document.getElementById('user-name').textContent = currentUser.name || currentUser.email;
+function flash(id, text, kind) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'alert alert-' + (kind || 'success');
+  el.hidden = false;
+}
+function clearFlash(id) { const el = $(id); if (el) el.hidden = true; }
 
-      if (currentUser.isAdmin) {
-        document.getElementById('admin-badge').classList.remove('hidden');
-        document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
-      }
+/* Wrap an async action so a rejected request always reaches the user. */
+function guarded(messageId, fn) {
+  return async function (...args) {
+    try { await fn(...args); }
+    catch (e) { flash(messageId, e.message, 'error'); }
+  };
+}
 
-      document.getElementById('public-key').value = currentUser.public_key || '';
-      loadMyServers();
-      loadMyBots();
-      loadTeamAgents();
-      if (currentUser.isAdmin) {
-        loadAllData();
-        startAutoImport();
-      }
+/* ============ state ============ */
+let me = null;
+let allServers = [];
+let allLabels = [];
+let allGroups = [];
+let allUsers = [];
+let teamAgents = [];
+let grantableLabels = [];
 
-      // Restore previously active tab after admin tabs are revealed
-      restoreActiveTab();
-    }
+/* ============ device vocabulary ============ */
+function kindOf(host) {
+  const h = host.toLowerCase();
+  if (h.includes('jump-host')) return 'jump';
+  if (/amr\d/.test(h)) return 'robot';
+  if (h.includes('orin') || h.includes('jetson')) return 'edge';
+  if (h.includes('cam') || h.includes('basler')) return 'camera';
+  if (h.endsWith('.cs')) return 'control';
+  return 'server';
+}
+/* Hostnames read as <stem>.<role>. When the tail is a domain rather than a
+   role (foo.logivations.com) the stem is what identifies the machine. */
+function shortName(host) {
+  const dot = host.indexOf('.');
+  if (dot < 0) return host;
+  const stem = host.slice(0, dot), tail = host.slice(dot + 1);
+  return tail.includes('.') ? stem : tail;
+}
+function siteOf(server) {
+  return (server.labels && server.labels[0]) || server.hostname.split('.')[0];
+}
+function deployState(server) {
+  if (!server.last_deployed_at) return 'new';
+  return server.is_up_to_date ? 'sync' : 'out';
+}
+const DEPLOY_TEXT = { sync: 'In sync', out: 'Needs sync', new: 'Never deployed' };
 
-    // Tab navigation
-    document.querySelectorAll('nav li').forEach(tab => {
-      tab.addEventListener('click', () => {
-        switchToTab(tab.dataset.tab);
-      });
+function groupBySite(servers) {
+  const map = new Map();
+  for (const s of servers) {
+    const site = siteOf(s);
+    if (!map.has(site)) map.set(site, []);
+    map.get(site).push(s);
+  }
+  return [...map.entries()].sort((a, b) => b[1].length - a[1].length);
+}
+
+/* Renders the site plan. `lit` is a Set of hostnames the current lens reaches;
+   pass null to render every tile as lit (used by the personal view). */
+function planMarkup(sites, lit, opts) {
+  const interactive = !opts || opts.interactive !== false;
+  return sites.map(([site, servers]) => {
+    const n = lit ? servers.filter(s => lit.has(s.hostname)).length : servers.length;
+    return `
+      <section class="site ${n ? '' : 'none'}">
+        <div class="site-head">
+          <span class="site-name">${esc(site)}</span>
+          <span class="site-n">${servers.length}</span>
+          <span class="site-rule"></span>
+          ${lit ? `<span class="site-reach">${n} of ${servers.length} reachable</span>` : ''}
+        </div>
+        <div class="tiles">
+          ${servers.map(s => {
+            const on = !lit || lit.has(s.hostname);
+            const tag = interactive ? 'button' : 'span';
+            return `<${tag} class="tile ${on ? 'lit' : 'unlit'} d-${deployState(s)}${
+              s.restricted ? ' restricted' : ''}${interactive ? '' : ' static'}"
+              ${interactive ? 'aria-pressed="false"' : ''}
+              title="${esc(s.hostname)}" data-host="${esc(s.hostname)}"
+              data-search="${esc((s.hostname + ' ' + site + ' ' + (s.description || '') + ' ' +
+                (s.labels || []).join(' ')).toLowerCase())}">
+              <span class="kind">${esc(kindOf(s.hostname))}</span>${esc(shortName(s.hostname))}
+            </${tag}>`;
+          }).join('')}
+        </div>
+      </section>`;
+  }).join('');
+}
+
+function deploySummary(servers) {
+  const c = { sync: 0, out: 0, new: 0 };
+  servers.forEach(s => c[deployState(s)]++);
+  return `Deploy state · ${c.sync} in sync · ${c.out} need sync · ${c.new} never deployed`;
+}
+
+/* ============ modals ============ */
+let modalOpener = null;
+function openModal(id) {
+  modalOpener = document.activeElement;
+  $(id).hidden = false;
+  const first = $(id).querySelector('select, input, button.btn');
+  if (first) first.focus();
+}
+function closeModal(id) {
+  const m = $(id);
+  m.hidden = true;
+  m.querySelectorAll('.alert').forEach(a => { a.hidden = true; });
+  if (modalOpener && document.body.contains(modalOpener)) modalOpener.focus();
+  modalOpener = null;
+}
+function openModalIds() {
+  return [...document.querySelectorAll('.modal')].filter(m => !m.hidden).map(m => m.id);
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') openModalIds().forEach(closeModal);
+});
+document.querySelectorAll('.modal').forEach(m => {
+  m.addEventListener('mousedown', e => { if (e.target === m) closeModal(m.id); });
+  m.addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const f = [...m.querySelectorAll('a[href], button, input, select, textarea')]
+      .filter(x => !x.disabled && x.offsetParent !== null);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+});
+document.querySelectorAll('[data-close]').forEach(b =>
+  b.addEventListener('click', () => closeModal(b.dataset.close)));
+
+/* ============ tabs ============ */
+function visibleTabs() { return [...document.querySelectorAll('.tab')].filter(t => !t.hidden); }
+function showTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => {
+    const on = t === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(t.getAttribute('aria-controls')).hidden = !on;
+  });
+  try { localStorage.setItem('superkey-tab', tab.id); } catch (e) { /* private mode */ }
+}
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => { showTab(tab); tab.focus(); });
+  tab.addEventListener('keydown', e => {
+    const tabs = visibleTabs();
+    const i = tabs.indexOf(tab);
+    let next = null;
+    if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+    if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+    if (e.key === 'Home') next = tabs[0];
+    if (e.key === 'End') next = tabs[tabs.length - 1];
+    if (next) { e.preventDefault(); showTab(next); next.focus(); }
+  });
+});
+
+/* ============ my access ============ */
+async function fingerprint(key) {
+  try {
+    const b64 = String(key).trim().split(/\s+/)[1];
+    if (!b64 || !crypto.subtle) return null;
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    let s = '';
+    new Uint8Array(digest).forEach(b => { s += String.fromCharCode(b); });
+    return 'SHA256:' + btoa(s).replace(/=+$/, '');
+  } catch (e) { return null; }
+}
+
+async function renderKeyState() {
+  const key = me.public_key || '';
+  const box = $('key-state');
+  if (!key) {
+    box.innerHTML = '<div class="keybox empty">No key on file — you cannot reach any device until you add one.</div>';
+    $('key-editor').open = true;
+    $('key-editor-summary').textContent = 'Add your key';
+    return;
+  }
+  const type = key.trim().split(/\s+/)[0];
+  const fp = await fingerprint(key);
+  box.innerHTML = `<div class="keybox">
+      <b>${esc(fp || key.trim().slice(0, 64) + '…')}</b>
+      <div class="meta">${esc(type)}</div>
+    </div>`;
+  $('key-editor-summary').textContent = 'Replace this key';
+}
+
+const saveKey = guarded('key-message', async () => {
+  const value = $('public-key').value.trim();
+  await api('/api/me/public-key', { method: 'PUT', body: JSON.stringify({ publicKey: value }) });
+  me.public_key = value;
+  await renderKeyState();
+  $('public-key').value = '';
+  $('key-editor').open = false;
+  flash('key-message', 'Key saved. It reaches your devices on the next deploy.');
+  loadMyAccess();
+});
+
+async function loadMyAccess() {
+  let servers = [];
+  try { servers = await api('/api/my-servers'); }
+  catch (e) { flash('key-message', 'Could not load your devices: ' + e.message, 'error'); return; }
+
+  const sites = groupBySite(servers);
+  $('mine-sites').innerHTML = planMarkup(sites, null, { interactive: false });
+  $('mine-empty').hidden = servers.length > 0;
+  $('mine-headline').textContent = servers.length
+    ? servers.length + (servers.length === 1 ? ' device' : ' devices') : 'No devices';
+  $('mine-sub').textContent = servers.length ? `across ${sites.length} ${sites.length === 1 ? 'site' : 'sites'}` : '';
+  $('m-dev').textContent = servers.length;
+  $('m-sites').textContent = sites.length;
+  $('m-groups').innerHTML = (me.groups || []).length
+    ? me.groups.map(g => `<span class="tg">${esc(g)}</span>`).join('')
+    : '<span class="tg none">no groups</span>';
+  $('m-deploy').textContent = servers.length ? deploySummary(servers) : '';
+}
+
+/* ============ my agents ============ */
+function keySummary(key) {
+  const parts = String(key || '').trim().split(/\s+/);
+  if (parts.length < 2) return esc(key || '—');
+  return esc(parts[0]) + ' …' + esc(parts[1].slice(-12));
+}
+
+async function loadBots() {
+  let bots = [];
+  try { bots = await api('/api/me/bots'); }
+  catch (e) { flash('bot-message', e.message, 'error'); return; }
+  $('bots-list').innerHTML = bots.length ? bots.map(b => `
+    <tr>
+      <td class="mono">${esc(b.name)}</td>
+      <td class="mono">${esc(b.account)}</td>
+      <td class="mono">${keySummary(b.public_key)}</td>
+      <td class="mono">${b.source_cidr ? esc(b.source_cidr) : '—'}</td>
+      <td class="actions"><button class="btn danger" data-revoke-bot="${b.id}"
+        data-name="${esc(b.name)}">Revoke</button></td>
+    </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">No agents yet.</td></tr>';
+}
+
+const saveBot = guarded('bot-message', async () => {
+  const name = $('bot-name').value.trim();
+  const publicKey = $('bot-key').value.trim();
+  const sourceCidr = $('bot-source').value.trim();
+  await api('/api/me/bots', { method: 'POST', body: JSON.stringify({ name, publicKey, sourceCidr }) });
+  $('bot-key').value = '';
+  flash('bot-message', `Agent "${name}" saved. It reaches your devices on the next deploy.`);
+  loadBots();
+});
+
+const revokeBot = guarded('bot-message', async (id, name) => {
+  if (!confirm(`Revoke agent "${name}"? Its access is removed on the next deploy.`)) return;
+  await api('/api/me/bots/' + id, { method: 'DELETE' });
+  flash('bot-message', `Agent "${name}" revoked.`);
+  loadBots();
+});
+
+/* ============ team agents ============ */
+async function loadTeamAgents() {
+  try {
+    const [agents, labels] = await Promise.all([api('/api/agents'), api('/api/me/labels')]);
+    teamAgents = agents;
+    grantableLabels = labels;
+  } catch (e) { flash('agent-message', e.message, 'error'); return; }
+
+  $('team-list').innerHTML = teamAgents.length ? teamAgents.map(a => `
+    <tr>
+      <td class="mono">${esc(a.name)}${a.description
+        ? `<div class="muted" style="font-size:11.5px">${esc(a.description)}</div>` : ''}</td>
+      <td class="mono">${esc(a.account)}</td>
+      <td class="mono">${keySummary(a.public_key)}</td>
+      <td>${a.labels.length
+        ? a.labels.map(l => `<span class="tg">${esc(l.name)}</span>`).join('')
+        : '<span class="tg none">no access</span>'}</td>
+      <td class="actions">
+        <button class="btn" data-agent-labels="${a.id}">Labels</button>
+        ${me.isAdmin ? `<button class="btn danger" data-delete-agent="${a.id}"
+          data-name="${esc(a.name)}">Delete</button>` : ''}
+      </td>
+    </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">No team agents registered yet.</td></tr>';
+}
+
+function renderAgentModal(agentId) {
+  const agent = teamAgents.find(a => a.id === agentId);
+  if (!agent) return;
+  $('agent-modal-title').textContent = 'Labels: ' + agent.name;
+  $('am-add-btn').dataset.agent = agentId;
+
+  const attached = new Set(agent.labels.map(l => l.id));
+  const addable = grantableLabels.filter(l => !attached.has(l.id));
+  $('am-add').innerHTML = addable.length
+    ? addable.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('')
+    : '<option value="">No labels left to attach</option>';
+  $('am-add-btn').disabled = addable.length === 0;
+
+  const removable = new Set(grantableLabels.map(l => l.id));
+  $('am-labels').innerHTML = agent.labels.length
+    ? agent.labels.map(l => {
+        const may = me.isAdmin || removable.has(l.id);
+        return `<span class="tg">${esc(l.name)}${may
+          ? `<button data-agent-remove="${l.id}" data-agent="${agentId}"
+              aria-label="Remove ${esc(l.name)}">&times;</button>` : ''}</span>`;
+      }).join('')
+    : '<span class="tg none">no labels — the agent has no access</span>';
+}
+
+const openAgentModal = guarded('agent-message', async id => {
+  renderAgentModal(id);
+  clearFlash('am-message');
+  openModal('agent-modal');
+});
+
+const attachAgentLabel = guarded('am-message', async () => {
+  const agentId = Number($('am-add-btn').dataset.agent);
+  const labelId = $('am-add').value;
+  if (!labelId) return;
+  await api(`/api/agents/${agentId}/labels/${labelId}`, { method: 'POST' });
+  await loadTeamAgents();
+  renderAgentModal(agentId);
+  flash('am-message', 'Label attached. It applies on the next deploy.');
+});
+
+const detachAgentLabel = guarded('am-message', async (agentId, labelId) => {
+  await api(`/api/agents/${agentId}/labels/${labelId}`, { method: 'DELETE' });
+  await loadTeamAgents();
+  renderAgentModal(agentId);
+  flash('am-message', 'Label removed. It applies on the next deploy.');
+});
+
+const deleteAgent = guarded('agent-message', async (id, name) => {
+  if (!confirm(`Delete team agent "${name}"? Its accounts are locked on the next deploy.`)) return;
+  await api('/api/agents/' + id, { method: 'DELETE' });
+  flash('agent-message', `Agent "${name}" deleted.`);
+  loadTeamAgents();
+});
+
+/* ============ admin: who can reach what ============ */
+let planSites = [];
+let currentLens = null;
+
+function buildLensOptions() {
+  const opt = (v, t) => `<option value="${esc(v)}">${esc(t)}</option>`;
+  $('lens-select').innerHTML =
+    opt('user:' + me.id, 'You — ' + (me.name || me.email)) +
+    opt('all', 'Everyone — the whole fleet') +
+    `<optgroup label="People">${allUsers.map(u =>
+      opt('user:' + u.id, u.name || u.email)).join('')}</optgroup>` +
+    `<optgroup label="Groups">${allGroups.map(g => opt('group:' + g.name, g.name)).join('')}</optgroup>` +
+    `<optgroup label="Labels">${allLabels.map(l => opt('label:' + l.name, l.name)).join('')}</optgroup>`;
+}
+
+/* Each lens answers a slightly different question, so each says so plainly. */
+async function resolveLens(value) {
+  const sep = value.indexOf(':');
+  const kind = sep < 0 ? value : value.slice(0, sep);
+  const key = sep < 0 ? '' : value.slice(sep + 1);
+
+  if (kind === 'all') {
+    return {
+      kind: 'Fleet', name: 'Everyone', meta: 'every device, no filter',
+      hosts: new Set(allServers.map(s => s.hostname)), via: [], viaLabel: 'Granted by',
+    };
+  }
+  if (kind === 'user') {
+    const id = Number(key);
+    const user = allUsers.find(u => u.id === id) || me;
+    const servers = id === me.id && !me.isAdmin
+      ? await api('/api/my-servers')
+      : await api('/api/user-servers/' + id);
+    return {
+      kind: 'Person', name: user.name || user.email, meta: user.email,
+      hosts: new Set(servers.map(s => s.hostname)),
+      via: user.group_names || me.groups || [], viaLabel: 'Member of',
+    };
+  }
+  if (kind === 'group') {
+    const group = allGroups.find(g => g.name === key);
+    const held = allLabels.filter(l => (l.groups || []).some(g => g.name === key)).map(l => l.name);
+    const set = new Set(held);
+    return {
+      kind: 'Group', name: key,
+      meta: `${group ? group.member_count : 0} members · reachable through this group's labels`,
+      hosts: new Set(allServers.filter(s => (s.labels || []).some(l => set.has(l))).map(s => s.hostname)),
+      via: held, viaLabel: 'Labels held',
+    };
+  }
+  const label = allLabels.find(l => l.name === key);
+  const carrying = allServers.filter(s => (s.labels || []).includes(key));
+  return {
+    kind: 'Label', name: key, meta: `${carrying.length} devices carry it`,
+    hosts: new Set(carrying.map(s => s.hostname)),
+    via: (label && label.groups || []).map(g => g.name), viaLabel: 'Granted to',
+  };
+}
+
+const applyLens = guarded('import-status', async value => {
+  currentLens = await resolveLens(value);
+  const lit = currentLens.hosts;
+
+  $('plan-sites').innerHTML = planMarkup(planSites, lit);
+  filterPlan();
+
+  const litSites = planSites.filter(([, ss]) => ss.some(s => lit.has(s.hostname))).length;
+  $('plan-headline').textContent = `${lit.size} of ${allServers.length} devices`;
+  $('plan-sub').textContent = `${litSites} of ${planSites.length} sites`;
+  $('subj-kind').textContent = currentLens.kind;
+  $('subj-name').textContent = currentLens.name;
+  $('subj-meta').textContent = currentLens.meta;
+  $('s-dev').textContent = lit.size;
+  $('s-sites').textContent = litSites;
+  $('s-pct').textContent = allServers.length
+    ? Math.round(lit.size / allServers.length * 100) + '%' : '—';
+  $('via-label').textContent = currentLens.viaLabel;
+  $('s-via').innerHTML = currentLens.via.length
+    ? currentLens.via.map(v => `<span class="tg">${esc(v)}</span>`).join('')
+    : '<span class="tg none">nothing</span>';
+  $('s-deploy').textContent = deploySummary(allServers.filter(s => lit.has(s.hostname)));
+
+  $('device-detail').innerHTML =
+    '<div class="empty-detail">Pick a device to see everyone who can reach it, and how.</div>';
+});
+
+function filterPlan() {
+  const q = $('plan-filter').value.trim().toLowerCase();
+  let shown = 0;
+  $('plan-sites').querySelectorAll('.site').forEach(sec => {
+    let any = 0;
+    sec.querySelectorAll('.tile').forEach(t => {
+      const hit = !q || t.dataset.search.includes(q);
+      t.hidden = !hit;
+      if (hit) any++;
     });
+    sec.hidden = !any;
+    shown += any;
+  });
+  $('plan-empty').hidden = shown > 0 || !q;
+}
 
-    function switchToTab(tabName) {
-      document.querySelectorAll('nav li').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
-      const tab = document.querySelector(`nav li[data-tab="${tabName}"]`);
-      if (tab) {
-        tab.classList.add('active');
-        document.getElementById('tab-' + tabName).classList.remove('hidden');
-        localStorage.setItem('superkey-active-tab', tabName);
-      }
-    }
+const selectDevice = guarded('import-status', async hostname => {
+  const server = allServers.find(s => s.hostname === hostname);
+  if (!server) return;
+  document.querySelectorAll('.tile[aria-pressed="true"]')
+    .forEach(t => t.setAttribute('aria-pressed', 'false'));
+  const tile = $('plan-sites').querySelector(`.tile[data-host="${CSS.escape(hostname)}"]`);
+  if (tile) tile.setAttribute('aria-pressed', 'true');
 
-    function restoreActiveTab() {
-      const savedTab = localStorage.getItem('superkey-active-tab');
-      if (savedTab) {
-        const tab = document.querySelector(`nav li[data-tab="${savedTab}"]`);
-        // Only restore if the tab exists and is visible (for admin tabs)
-        if (tab && !tab.classList.contains('hidden')) {
-          switchToTab(savedTab);
-        }
-      }
-    }
+  const detail = $('device-detail');
+  detail.innerHTML = '<div class="empty-detail">Loading…</div>';
+  const access = await api('/api/server-access/' + server.id);
+  const state = deployState(server);
+  const when = server.last_deployed_at
+    ? new Date(server.last_deployed_at).toLocaleDateString() : null;
 
-    // API helpers
-    async function api(url, options = {}) {
-      const res = await fetch(url, {
-        ...options,
-        headers: { 'Content-Type': 'application/json', ...options.headers }
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Request failed' }));
-        throw new Error(err.error);
-      }
-      return res.json();
-    }
+  detail.innerHTML = `
+    <div class="detail-head"><span class="detail-host">${esc(server.hostname)}</span></div>
+    <div class="detail-body">
+      <div class="drow"><span class="k">Kind</span><span class="v">${esc(kindOf(server.hostname))}</span></div>
+      <div class="drow"><span class="k">Address</span><span class="v">${
+        esc((server.description || '').split(' ')[0] || '—')}</span></div>
+      <div class="drow"><span class="k">Deploy</span><span class="v">${esc(DEPLOY_TEXT[state])}${
+        when ? ' · ' + esc(when) : ''}</span></div>
+      <div class="drow"><span class="k">Labels</span><span class="v">${
+        (server.labels || []).length
+          ? server.labels.map(l => `<span class="tg">${esc(l)}</span>`).join('')
+          : '<span class="tg none">none</span>'}</span></div>
+      ${access.restricted ? `<div class="drow"><span class="k">Restricted</span>
+        <span class="v">widening access needs a commit to restricted-servers.json</span></div>` : ''}
+      ${access.agents && access.agents.length ? `<div class="drow"><span class="k">Agents</span>
+        <span class="v">${access.agents.map(a => `<span class="tg">${esc(a.name || a)}</span>`).join('')}</span></div>` : ''}
+    </div>
+    <div class="reach-head">
+      <span class="n">${access.users.length}</span>
+      <span class="t">${access.users.length === 1 ? 'person can reach it' : 'people can reach it'}</span>
+    </div>
+    ${access.users.length ? `<ul class="people">${access.users.map(u => `
+      <li><button class="person" data-lens-user="${u.id}">
+        <span class="nm">${esc(u.name || u.email)}</span>${u.public_key ? ''
+          : ' <span class="tg warn">no key</span>'}<br>
+        <span class="via">via ${esc(u.group_names.join(', '))}</span>
+      </button></li>`).join('')}</ul>`
+      : '<div class="nobody">Nobody. No label on this device grants access to a group.</div>'}
+    <div class="actions">
+      <button class="btn solid" data-device-labels="${server.id}">Edit labels</button>
+      <button class="btn quiet" data-download="${server.id}">Download setup</button>
+    </div>`;
+});
 
-    // Public key
-    async function savePublicKey() {
-      const key = document.getElementById('public-key').value;
-      const msg = document.getElementById('key-message');
-      try {
-        await api('/api/me/public-key', { method: 'PUT', body: JSON.stringify({ publicKey: key }) });
-        msg.className = 'alert alert-success';
-        msg.textContent = 'Public key saved successfully!';
-      } catch (e) {
-        msg.className = 'alert alert-error';
-        msg.textContent = e.message;
-      }
-      msg.classList.remove('hidden');
-    }
+/* ---- device labels modal ---- */
+function renderDeviceModal(serverId) {
+  const server = allServers.find(s => s.id === serverId);
+  if (!server) return;
+  $('dm-host').textContent = server.hostname;
+  $('dm-desc').textContent = server.description || '—';
+  $('dm-add-btn').dataset.server = serverId;
 
-    // Bots
-    function escHtml(s) {
-      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
+  const attached = new Set(server.labels || []);
+  const addable = allLabels.filter(l => !attached.has(l.name));
+  $('dm-add').innerHTML = addable.length
+    ? addable.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('')
+    : '<option value="">No labels left to add</option>';
+  $('dm-add-btn').disabled = addable.length === 0;
 
-    function keySummary(key) {
-      const parts = String(key || '').trim().split(/\s+/);
-      if (parts.length < 2) return escHtml(key || '');
-      return `${escHtml(parts[0])} …${escHtml(parts[1].slice(-12))}`;
-    }
+  $('dm-labels').innerHTML = (server.labels || []).length
+    ? server.labels.map(name => {
+        const l = allLabels.find(x => x.name === name);
+        return `<span class="tg">${esc(name)}${l
+          ? `<button data-device-remove="${l.id}" data-server="${serverId}"
+              aria-label="Remove ${esc(name)}">&times;</button>` : ''}</span>`;
+      }).join('')
+    : '<span class="tg none">no labels — nobody can reach this device</span>';
+}
 
-    async function loadMyBots() {
-      let bots = [];
-      try { bots = await api('/api/me/bots'); } catch { /* not logged in / no bots */ }
-      const list = document.getElementById('my-bots-list');
-      list.innerHTML = bots.length ? bots.map(b => `
-        <tr>
-          <td>${escHtml(b.name)}</td>
-          <td><code>${escHtml(b.account)}</code></td>
-          <td style="font-family: monospace; font-size: 0.85rem;">${keySummary(b.public_key)}</td>
-          <td>${b.source_cidr ? escHtml(b.source_cidr) : '—'}</td>
-          <td><button class="btn btn-secondary" onclick="revokeBot(${b.id}, '${escHtml(b.name)}')">Revoke</button></td>
-        </tr>`).join('') : '<tr><td colspan="5">No bots yet</td></tr>';
-    }
+const openDeviceModal = guarded('import-status', async serverId => {
+  renderDeviceModal(serverId);
+  clearFlash('dm-message');
+  openModal('device-modal');
+});
 
-    async function addBot() {
-      const name = document.getElementById('bot-name').value.trim();
-      const publicKey = document.getElementById('bot-key').value.trim();
-      const sourceCidr = document.getElementById('bot-source').value.trim();
-      const msg = document.getElementById('bot-message');
-      try {
-        await api('/api/me/bots', { method: 'POST', body: JSON.stringify({ name, publicKey, sourceCidr }) });
-        msg.className = 'alert alert-success';
-        msg.textContent = `Agent "${name}" saved. It will be provisioned on your devices on the next deploy.`;
-        document.getElementById('bot-key').value = '';
-        loadMyBots();
-      } catch (e) {
-        msg.className = 'alert alert-error';
-        msg.textContent = e.message;
-      }
-      msg.classList.remove('hidden');
-    }
+const addDeviceLabel = guarded('dm-message', async () => {
+  const serverId = Number($('dm-add-btn').dataset.server);
+  const labelId = $('dm-add').value;
+  if (!labelId) return;
+  await api(`/api/servers/${serverId}/labels/${labelId}`, { method: 'POST' });
+  await refreshFleet();
+  renderDeviceModal(serverId);
+  flash('dm-message', 'Label added. It applies on the next deploy.');
+});
 
-    async function revokeBot(id, name) {
-      if (!confirm(`Revoke agent "${name}"? Its access is removed on the next deploy.`)) return;
-      const msg = document.getElementById('bot-message');
-      try {
-        await api('/api/me/bots/' + id, { method: 'DELETE' });
-        msg.className = 'alert alert-success';
-        msg.textContent = `Agent "${name}" revoked.`;
-        loadMyBots();
-      } catch (e) {
-        msg.className = 'alert alert-error';
-        msg.textContent = e.message;
-      }
-      msg.classList.remove('hidden');
-    }
+const removeDeviceLabel = guarded('dm-message', async (serverId, labelId) => {
+  await api(`/api/servers/${serverId}/labels/${labelId}`, { method: 'DELETE' });
+  await refreshFleet();
+  renderDeviceModal(serverId);
+  flash('dm-message', 'Label removed. It applies on the next deploy.');
+});
 
-    // Team agents
-    let teamAgents = [];
-    let grantableLabels = [];
+const downloadSetup = guarded('import-status', async serverId => {
+  const server = allServers.find(s => s.id === serverId);
+  const res = await fetch(`/api/servers/${serverId}/download-setup`, { credentials: 'same-origin' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Could not build the setup package.');
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `superkey-setup-${server.hostname}.tar.gz`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
 
-    function agentFlash(text, isError) {
-      const msg = document.getElementById('agent-message');
-      msg.className = isError ? 'alert alert-error' : 'alert alert-success';
-      msg.textContent = text;
-      msg.classList.remove('hidden');
-    }
+/* ============ admin: labels ============ */
+function deviceCountFor(labelName) {
+  return allServers.filter(s => (s.labels || []).includes(labelName)).length;
+}
+function renderLabels() {
+  const q = $('labels-filter').value.trim().toLowerCase();
+  const rows = allLabels.filter(l => !q || l.name.toLowerCase().includes(q) ||
+    (l.groups || []).some(g => g.name.toLowerCase().includes(q)));
+  $('labels-list').innerHTML = rows.length ? rows.map(l => `
+    <tr>
+      <td class="mono">${esc(l.name)}</td>
+      <td class="mono">${deviceCountFor(l.name)}</td>
+      <td>${(l.groups || []).length
+        ? l.groups.map(g => `<span class="tg">${esc(g.name)}</span>`).join('')
+        : '<span class="tg none">nobody</span>'}</td>
+      <td class="actions">
+        <button class="btn" data-grant="${l.id}" data-name="${esc(l.name)}">Manage access</button>
+        <button class="btn danger" data-delete-label="${l.id}" data-name="${esc(l.name)}">Delete</button>
+      </td>
+    </tr>`).join('')
+    : `<tr><td colspan="4" class="muted">${q ? 'No labels match that filter.' : 'No labels yet.'}</td></tr>`;
+}
 
-    async function loadTeamAgents() {
-      try {
-        [teamAgents, grantableLabels] = await Promise.all([
-          api('/api/agents'),
-          api('/api/me/labels')
-        ]);
-      } catch { return; }
-      const list = document.getElementById('team-agents-list');
-      list.innerHTML = teamAgents.length ? teamAgents.map(a => `
-        <tr>
-          <td>${escHtml(a.name)}${a.description ? `<br><span style="color:#999;font-size:0.85rem">${escHtml(a.description)}</span>` : ''}</td>
-          <td><code>${escHtml(a.account)}</code></td>
-          <td style="font-family: monospace; font-size: 0.85rem;">${keySummary(a.public_key)}</td>
-          <td>${a.labels.map(l => `<span class="tag">${escHtml(l.name)}</span>`).join('') || '<span style="color:#999">No access</span>'}</td>
-          <td>
-            <button class="btn btn-small btn-secondary" onclick="manageAgentLabels(${a.id})">Labels</button>
-            ${currentUser.isAdmin ? `<button class="btn btn-small btn-danger" onclick="deleteAgent(${a.id}, '${escHtml(a.name)}')">Delete</button>` : ''}
-          </td>
-        </tr>`).join('') : '<tr><td colspan="5">No team agents registered yet</td></tr>';
-    }
+const createLabel = guarded('lm-message', async e => {
+  e.preventDefault();
+  const name = $('label-name').value.trim();
+  if (!name) return;
+  await api('/api/labels', { method: 'POST', body: JSON.stringify({ name }) });
+  closeModal('label-modal');
+  await refreshFleet();
+  renderLabels();
+  flash('label-message', `Label "${name}" added.`);
+});
 
-    function manageAgentLabels(agentId) {
-      const agent = teamAgents.find(a => a.id === agentId);
-      if (!agent) return;
-      document.getElementById('agent-labels-id').value = agentId;
-      document.getElementById('agent-labels-name').textContent = agent.name;
+const deleteLabel = guarded('label-message', async (id, name) => {
+  if (!confirm(`Delete label "${name}"? Devices keep running but lose this route to access.`)) return;
+  await api('/api/labels/' + id, { method: 'DELETE' });
+  await refreshFleet();
+  renderLabels();
+  flash('label-message', `Label "${name}" deleted.`);
+});
 
-      const attachedIds = new Set(agent.labels.map(l => l.id));
-      const addable = grantableLabels.filter(l => !attachedIds.has(l.id));
-      document.getElementById('add-label-to-agent').innerHTML = '<option value="">-- Add Label --</option>' +
-        addable.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('');
+function renderGrantModal(labelId) {
+  const label = allLabels.find(l => l.id === labelId);
+  if (!label) return;
+  $('grant-modal-title').textContent = 'Access: ' + label.name;
+  $('gm-intro').textContent =
+    `Groups granted this label reach all ${deviceCountFor(label.name)} devices carrying it.`;
+  $('gm-add-btn').dataset.label = labelId;
 
-      const removableIds = new Set(grantableLabels.map(l => l.id));
-      document.getElementById('agent-labels-list').innerHTML = agent.labels.length
-        ? agent.labels.map(l => {
-            const removable = currentUser.isAdmin || removableIds.has(l.id);
-            const x = removable ? ` <span style="cursor:pointer" onclick="removeLabelFromAgent(${agentId}, ${l.id})">×</span>` : '';
-            return `<span class="tag">${escHtml(l.name)}${x}</span>`;
-          }).join('')
-        : '<span style="color:#999">No labels — the agent has no access</span>';
+  const held = new Set((label.groups || []).map(g => g.id));
+  const addable = allGroups.filter(g => !held.has(g.id));
+  $('gm-add').innerHTML = addable.length
+    ? addable.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')
+    : '<option value="">Every group already has access</option>';
+  $('gm-add-btn').disabled = addable.length === 0;
 
-      document.getElementById('agent-labels-modal').classList.remove('hidden');
-    }
+  $('gm-groups').innerHTML = (label.groups || []).length
+    ? label.groups.map(g => `<span class="tg">${esc(g.name)}<button data-grant-remove="${g.id}"
+        data-label="${labelId}" aria-label="Remove ${esc(g.name)}">&times;</button></span>`).join('')
+    : '<span class="tg none">nobody can reach these devices</span>';
+}
 
-    async function addLabelToAgent() {
-      const agentId = parseInt(document.getElementById('agent-labels-id').value);
-      const labelId = document.getElementById('add-label-to-agent').value;
-      if (!labelId) return;
-      try {
-        await api(`/api/agents/${agentId}/labels/${labelId}`, { method: 'POST' });
-        await loadTeamAgents();
-        manageAgentLabels(agentId);
-      } catch (e) { agentFlash(e.message, true); closeModal('agent-labels-modal'); }
-    }
+const openGrantModal = guarded('label-message', async labelId => {
+  renderGrantModal(labelId);
+  clearFlash('gm-message');
+  openModal('grant-modal');
+});
 
-    async function removeLabelFromAgent(agentId, labelId) {
-      try {
-        await api(`/api/agents/${agentId}/labels/${labelId}`, { method: 'DELETE' });
-        await loadTeamAgents();
-        manageAgentLabels(agentId);
-      } catch (e) { agentFlash(e.message, true); closeModal('agent-labels-modal'); }
-    }
+const addGrant = guarded('gm-message', async () => {
+  const labelId = Number($('gm-add-btn').dataset.label);
+  const groupId = $('gm-add').value;
+  if (!groupId) return;
+  await api(`/api/labels/${labelId}/groups/${groupId}`, { method: 'POST' });
+  await refreshFleet();
+  renderGrantModal(labelId);
+  renderLabels();
+  flash('gm-message', 'Access granted. Keys reach the devices on the next deploy.');
+});
 
-    async function deleteAgent(id, name) {
-      if (!confirm(`Delete team agent "${name}"? Its accounts are locked on the next deploy.`)) return;
-      try {
-        await api('/api/agents/' + id, { method: 'DELETE' });
-        agentFlash(`Agent "${name}" deleted.`);
-        loadTeamAgents();
-      } catch (e) { agentFlash(e.message, true); }
-    }
+const removeGrant = guarded('gm-message', async (labelId, groupId) => {
+  await api(`/api/labels/${labelId}/groups/${groupId}`, { method: 'DELETE' });
+  await refreshFleet();
+  renderGrantModal(labelId);
+  renderLabels();
+  flash('gm-message', 'Access removed. Keys are withdrawn on the next deploy.');
+});
 
-    // My servers
-    async function loadMyServers() {
-      const servers = await api('/api/my-servers');
-      const list = document.getElementById('my-servers-list');
-      list.innerHTML = servers.length ? servers.map(s => {
-        let syncStatus;
-        if (!s.last_deployed_at) {
-          syncStatus = '<div class="sync-status"><span class="dot dot-gray"></span> Never deployed</div>';
-        } else if (s.is_up_to_date) {
-          syncStatus = '<div class="sync-status"><span class="dot dot-green"></span> Up to date</div>';
-        } else {
-          syncStatus = '<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync</div>';
-        }
-        return `<tr><td>${s.hostname}</td><td>${s.description || '-'}</td><td>${syncStatus}</td></tr>`;
-      }).join('') : '<tr><td colspan="3">No devices accessible</td></tr>';
-    }
+/* ============ admin: groups & users ============ */
+function labelsHeldBy(groupName) {
+  return allLabels.filter(l => (l.groups || []).some(g => g.name === groupName)).map(l => l.name);
+}
+function renderGroups() {
+  const q = $('groups-filter').value.trim().toLowerCase();
+  const rows = allGroups.filter(g => !q || g.name.toLowerCase().includes(q) ||
+    (g.google_group_email || '').toLowerCase().includes(q));
+  $('groups-list').innerHTML = rows.length ? rows.map(g => {
+    const held = labelsHeldBy(g.name);
+    return `<tr>
+      <td class="mono">${esc(g.name)}</td>
+      <td class="mono">${esc(g.google_group_email || '—')}</td>
+      <td class="mono">${g.member_count == null ? '—' : g.member_count}</td>
+      <td>${held.length ? held.map(n => `<span class="tg">${esc(n)}</span>`).join('')
+        : '<span class="tg none">none</span>'}</td>
+    </tr>`;
+  }).join('')
+    : `<tr><td colspan="4" class="muted">${q ? 'No groups match that filter.' : 'No groups yet.'}</td></tr>`;
+}
 
-    // Table filters (admin tabs)
-    const filters = { devices: '', labels: '', groups: '', users: '' };
+const syncGroups = guarded('sync-message', async () => {
+  const btn = $('sync-groups-btn');
+  btn.disabled = true;
+  flash('sync-message', 'Syncing from Google Workspace…');
+  try {
+    const r = await api('/api/sync-all-groups', { method: 'POST' });
+    const bits = [
+      `${r.googleUsers || 0} users and ${r.googleGroups || 0} groups read from Google`,
+      `${r.memberships} memberships synced`,
+    ];
+    if (r.createdUsers) bits.push(`${r.createdUsers} users added`);
+    if (r.removedUsers) bits.push(`${r.removedUsers} users removed`);
+    if (r.createdGroups) bits.push(`${r.createdGroups} groups added`);
+    if (r.removedGroups) bits.push(`${r.removedGroups} groups removed`);
+    flash('sync-message', bits.join(' · ') + '.');
+    await refreshFleet();
+    renderGroups();
+    renderUsers();
+  } finally { btn.disabled = false; }
+});
 
-    function setFilter(which, value) {
-      filters[which] = value.trim().toLowerCase();
-      if (which === 'devices') renderServers();
-      else if (which === 'labels') renderLabels();
-      else if (which === 'groups') renderGroups();
-      else if (which === 'users') renderUsers();
-    }
+function renderUsers() {
+  const q = $('users-filter').value.trim().toLowerCase();
+  const rows = allUsers.filter(u => !q ||
+    (u.name || '').toLowerCase().includes(q) ||
+    u.email.toLowerCase().includes(q) ||
+    (u.group_names || []).some(g => g.toLowerCase().includes(q)));
+  $('users-list').innerHTML = rows.length ? rows.map(u => `
+    <tr>
+      <td>${esc(u.name || '—')}</td>
+      <td class="mono">${esc(u.email)}</td>
+      <td>${u.public_key ? '<span class="tg">on file</span>' : '<span class="tg warn">none</span>'}</td>
+      <td>${(u.group_names || []).length
+        ? u.group_names.map(g => `<span class="tg">${esc(g)}</span>`).join('')
+        : '<span class="tg none">none</span>'}</td>
+      <td class="actions"><button class="btn" data-lens-user="${u.id}">Show access</button></td>
+    </tr>`).join('')
+    : `<tr><td colspan="5" class="muted">${q ? 'No users match that filter.' : 'No users yet.'}</td></tr>`;
+}
 
-    function matchesFilter(which, ...fields) {
-      const q = filters[which];
-      if (!q) return true;
-      return fields.some(f => String(f || '').toLowerCase().includes(q));
-    }
+/* ============ admin data ============ */
+async function refreshFleet() {
+  [allServers, allLabels, allGroups, allUsers] = await Promise.all([
+    api('/api/servers'), api('/api/labels'), api('/api/groups'), api('/api/users'),
+  ]);
+  planSites = groupBySite(allServers);
+}
 
-    // Load all data (admin)
-    async function loadAllData() {
-      [allUsers, allGroups, allLabels, allServers] = await Promise.all([
-        api('/api/users'),
-        api('/api/groups'),
-        api('/api/labels'),
-        api('/api/servers')
-      ]);
-      renderServers();
+const loadAdmin = guarded('import-status', async () => {
+  await refreshFleet();
+  buildLensOptions();
+  renderLabels();
+  renderGroups();
+  renderUsers();
+  await applyLens($('lens-select').value);
+  startAutoImport();
+});
+
+/* Devices are imported from the ssh-configs repo; the runner keeps the fleet
+   list current, so this only refreshes what the page is showing. */
+let autoImportTimer = null;
+async function importOnce() {
+  try {
+    await api('/api/import-servers', { method: 'POST' });
+    const before = allServers.length;
+    await refreshFleet();
+    if (allServers.length !== before) {
+      buildLensOptions();
       renderLabels();
-      renderGroups();
-      renderUsers();
-      populateAdminSelects();
+      await applyLens($('lens-select').value);
     }
+  } catch (e) { /* the timer retries; nothing actionable for the user */ }
+  try {
+    const r = await api('/api/ssh-configs-commit-date');
+    $('import-status').textContent = r.date
+      ? `${allServers.length} devices · ssh-configs last changed ${new Date(r.date).toLocaleString()}`
+      : `${allServers.length} devices`;
+  } catch (e) { /* leave the previous line in place */ }
+}
+function startAutoImport() {
+  if (autoImportTimer) return;
+  importOnce();
+  autoImportTimer = setInterval(importOnce, 5 * 60 * 1000);
+}
 
-    function renderServers() {
-      const visibleServers = allServers.filter(s => matchesFilter('devices', s.hostname, s.description, s.labels.join(' ')));
-      document.getElementById('servers-list').innerHTML = visibleServers.map(s => {
-        let syncStatus;
-        if (!s.last_deployed_at) {
-          syncStatus = '<div class="sync-status"><span class="dot dot-gray"></span> Never deployed</div>';
-        } else if (s.is_up_to_date) {
-          const deployedDate = new Date(s.last_deployed_at).toLocaleDateString();
-          syncStatus = `<div class="sync-status"><span class="dot dot-green"></span> Up to date (${deployedDate})</div>`;
-        } else {
-          const deployedDate = new Date(s.last_deployed_at).toLocaleDateString();
-          syncStatus = `<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync (${deployedDate})</div>`;
-        }
-        const restrictedBadge = s.restricted
-          ? ' <span class="tag" style="background:#7c2d12;color:#fff" title="Access limited by restricted-servers.json (change requires a git commit)">restricted</span>'
-          : '';
-        return `
-          <tr>
-            <td>${s.hostname}${restrictedBadge}</td>
-            <td>${s.description || '-'}</td>
-            <td>${s.labels.map(l => `<span class="tag">${l}</span>`).join('') || '<span style="color:#999">No labels</span>'}</td>
-            <td>${syncStatus}</td>
-            <td>
-              <button class="btn btn-small btn-secondary" onclick="manageServerLabels(${s.id})">Labels</button>
-              <button class="btn btn-small btn-secondary" onclick="downloadServerSetup(${s.id}, '${s.hostname}')" title="Download setup package for manual deployment">&#8595;</button>
-            </td>
-          </tr>
-        `;
-      }).join('') || `<tr><td colspan="5" style="color:#999">${filters.devices ? 'No devices match the filter' : 'No devices'}</td></tr>`;
-    }
+/* ============ wiring ============ */
+$('save-key').addEventListener('click', saveKey);
+$('save-bot').addEventListener('click', saveBot);
+$('add-label-btn').addEventListener('click', () => {
+  $('label-name').value = '';
+  clearFlash('lm-message');
+  openModal('label-modal');
+});
+$('label-form').addEventListener('submit', createLabel);
+$('sync-groups-btn').addEventListener('click', syncGroups);
+$('dm-add-btn').addEventListener('click', addDeviceLabel);
+$('gm-add-btn').addEventListener('click', addGrant);
+$('am-add-btn').addEventListener('click', attachAgentLabel);
+$('lens-select').addEventListener('change', e => applyLens(e.target.value));
+$('deploy-toggle').addEventListener('change', e =>
+  document.body.classList.toggle('show-deploy', e.target.checked));
 
-    let labelsRenderToken = 0;
-    async function renderLabels() {
-      const token = ++labelsRenderToken;
-      const visibleLabels = allLabels.filter(l => matchesFilter('labels', l.name));
-      const rows = await Promise.all(visibleLabels.map(async l => {
-        const groups = await api(`/api/labels/${l.id}/groups`);
-        return `
-          <tr>
-            <td>${l.name}</td>
-            <td>${groups.map(g => `<span class="tag">${g.name}</span>`).join('') || '-'}</td>
-            <td>
-              <button class="btn btn-small btn-secondary" onclick="manageLabelAccess(${l.id}, '${l.name}')">Manage Access</button>
-              <button class="btn btn-small btn-danger" onclick="deleteLabel(${l.id})">Delete</button>
-            </td>
-          </tr>
-        `;
-      }));
-      if (token !== labelsRenderToken) return;
-      document.getElementById('labels-list').innerHTML = rows.join('') || `<tr><td colspan="3" style="color:#999">${filters.labels ? 'No labels match the filter' : 'No labels'}</td></tr>`;
-    }
+let filterTimer = null;
+$('plan-filter').addEventListener('input', () => {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(filterPlan, 120);
+});
+['labels-filter', 'groups-filter', 'users-filter'].forEach(id => {
+  const render = { 'labels-filter': renderLabels, 'groups-filter': renderGroups, 'users-filter': renderUsers }[id];
+  $(id).addEventListener('input', render);
+});
 
-    let groupsRenderToken = 0;
-    async function renderGroups() {
-      const token = ++groupsRenderToken;
-      const visibleGroups = allGroups.filter(g => matchesFilter('groups', g.name, g.google_group_email));
-      const rows = await Promise.all(visibleGroups.map(async g => {
-        const members = await api(`/api/groups/${g.id}/users`);
-        return `
-          <tr>
-            <td>${g.name}</td>
-            <td>${g.google_group_email || '-'}</td>
-            <td>${members.length} members</td>
-          </tr>
-        `;
-      }));
-      if (token !== groupsRenderToken) return;
-      document.getElementById('groups-list').innerHTML = rows.join('') || `<tr><td colspan="3" style="color:#999">${filters.groups ? 'No groups match the filter' : 'No groups'}</td></tr>`;
-    }
+/* One delegated listener per region beats an onclick attribute per row. */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-host], [data-revoke-bot], [data-agent-labels], [data-delete-agent],' +
+    '[data-agent-remove], [data-device-labels], [data-device-remove], [data-download], [data-grant],' +
+    '[data-delete-label], [data-grant-remove], [data-lens-user]');
+  if (!t) return;
+  const d = t.dataset;
 
-    function renderUsers() {
-      const visibleUsers = allUsers.filter(u => matchesFilter('users', u.name, u.email));
-      document.getElementById('users-list').innerHTML = visibleUsers.map(u => `
-        <tr>
-          <td>${u.name || '-'}</td>
-          <td>${u.email}</td>
-          <td>${u.public_key ? '<span class="tag tag-green">Yes</span>' : '<span class="tag">No</span>'}</td>
-          <td><button class="btn btn-small btn-secondary" onclick="viewUserAccess(${u.id})">View Access</button></td>
-        </tr>
-      `).join('') || `<tr><td colspan="4" style="color:#999">${filters.users ? 'No users match the filter' : 'No users'}</td></tr>`;
-    }
+  if (d.host && !t.classList.contains('static')) return void selectDevice(d.host);
+  if (d.revokeBot) return void revokeBot(d.revokeBot, d.name);
+  if (d.agentLabels) return void openAgentModal(Number(d.agentLabels));
+  if (d.deleteAgent) return void deleteAgent(d.deleteAgent, d.name);
+  if (d.agentRemove) return void detachAgentLabel(Number(d.agent), Number(d.agentRemove));
+  if (d.deviceLabels) return void openDeviceModal(Number(d.deviceLabels));
+  if (d.deviceRemove) return void removeDeviceLabel(Number(d.server), Number(d.deviceRemove));
+  if (d.download) return void downloadSetup(Number(d.download));
+  if (d.grant) return void openGrantModal(Number(d.grant));
+  if (d.deleteLabel) return void deleteLabel(d.deleteLabel, d.name);
+  if (d.grantRemove) return void removeGrant(Number(d.label), Number(d.grantRemove));
+  if (d.lensUser) {
+    openModalIds().forEach(closeModal);
+    showTab($('t-access'));
+    $('lens-select').value = 'user:' + d.lensUser;
+    applyLens($('lens-select').value);
+  }
+});
 
-    function populateAdminSelects() {
-      const userOptions = allUsers.map(u => `<option value="${u.id}">${u.name || u.email}</option>`).join('');
-      const serverOptions = allServers.map(s => `<option value="${s.id}">${s.hostname}</option>`).join('');
-      document.getElementById('admin-user-select').innerHTML = '<option value="">-- Select User --</option>' + userOptions;
-      document.getElementById('admin-server-select').innerHTML = '<option value="">-- Select Device --</option>' + serverOptions;
-    }
+/* ============ boot ============ */
+async function init() {
+  try { me = await api('/api/me'); }
+  catch (e) { $('login-view').hidden = false; return; }
 
-    // Modals
-    function closeModal(id) {
-      document.getElementById(id).classList.add('hidden');
-    }
+  $('main-view').hidden = false;
+  $('user-name').textContent = me.name || me.email;
+  if (me.isAdmin) {
+    $('admin-badge').hidden = false;
+    document.querySelectorAll('.admin-only').forEach(el => { el.hidden = false; });
+  }
 
-    // Import servers from SSH config files (silent auto-import)
-    async function importServers() {
-      try {
-        await api('/api/import-servers', { method: 'POST' });
-        allServers = await api('/api/servers');
-        allLabels = await api('/api/labels');
-        renderServers();
-        renderLabels();
-        populateAdminSelects();
-      } catch (e) {
-        console.error('Auto-import failed:', e.message);
-      }
-    }
+  await renderKeyState();
+  loadMyAccess();
+  loadBots();
+  loadTeamAgents();
+  if (me.isAdmin) await loadAdmin();
 
-    // Fetch and display SSH configs last commit date
-    async function updateSshConfigsCommitDate() {
-      const el = document.getElementById('ssh-configs-commit-date');
-      try {
-        const result = await api('/api/ssh-configs-commit-date');
-        if (result.date) {
-          const date = new Date(result.date);
-          el.textContent = `SSH configs last commit: ${date.toLocaleString()}`;
-        } else {
-          el.textContent = result.error || 'Unable to get commit date';
-        }
-      } catch (e) {
-        el.textContent = 'Error loading commit date';
-      }
-    }
-
-    // Auto-import interval reference
-    let autoImportInterval = null;
-
-    // Start auto-import (every 5 minutes)
-    function startAutoImport() {
-      if (autoImportInterval) return;
-      importServers();
-      updateSshConfigsCommitDate();
-      autoImportInterval = setInterval(() => {
-        importServers();
-        updateSshConfigsCommitDate();
-      }, 5 * 60 * 1000);
-    }
-
-    async function manageServerLabels(serverId) {
-      const server = allServers.find(s => s.id === serverId);
-      document.getElementById('server-id').value = serverId;
-      document.getElementById('server-hostname-display').textContent = server.hostname;
-      document.getElementById('server-description-display').textContent = server.description || '-';
-
-      // Populate dropdown with labels not already assigned
-      const availableLabels = allLabels.filter(l => !server.labels.includes(l.name));
-      document.getElementById('add-label-to-server').innerHTML = '<option value="">-- Add Label --</option>' +
-        availableLabels.map(l => `<option value="${l.id}">${l.name}</option>`).join('');
-
-      // Show current labels with remove buttons
-      document.getElementById('server-labels-list').innerHTML = server.labels.length
-        ? server.labels.map(labelName => {
-            const label = allLabels.find(l => l.name === labelName);
-            return label ? `<span class="tag">${labelName} <span style="cursor:pointer" onclick="removeLabelFromServer(${serverId}, ${label.id})">×</span></span>` : '';
-          }).join('')
-        : '<span style="color:#999">No labels assigned</span>';
-
-      document.getElementById('server-modal').classList.remove('hidden');
-    }
-
-    async function addLabelToServer() {
-      const serverId = document.getElementById('server-id').value;
-      const labelId = document.getElementById('add-label-to-server').value;
-      if (labelId) {
-        await api(`/api/servers/${serverId}/labels/${labelId}`, { method: 'POST' });
-        allServers = await api('/api/servers');
-        renderServers();
-        manageServerLabels(parseInt(serverId));
-      }
-    }
-
-    async function removeLabelFromServer(serverId, labelId) {
-      await api(`/api/servers/${serverId}/labels/${labelId}`, { method: 'DELETE' });
-      allServers = await api('/api/servers');
-      renderServers();
-      manageServerLabels(serverId);
-    }
-
-    async function downloadServerSetup(serverId, hostname) {
-      try {
-        const response = await fetch(`/api/servers/${serverId}/download-setup`, {
-          credentials: 'include'
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          alert('Error: ' + (error.error || 'Failed to generate setup package'));
-          return;
-        }
-
-        // Create blob and trigger download
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `superkey-setup-${hostname}.tar.gz`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-      } catch (e) {
-        alert('Error downloading setup package: ' + e.message);
-      }
-    }
-
-    function showAddLabelModal() {
-      document.getElementById('label-name').value = '';
-      document.getElementById('label-modal').classList.remove('hidden');
-    }
-
-    async function saveLabel(e) {
-      e.preventDefault();
-      await api('/api/labels', { method: 'POST', body: JSON.stringify({ name: document.getElementById('label-name').value }) });
-      closeModal('label-modal');
-      allLabels = await api('/api/labels');
-      renderLabels();
-    }
-
-    async function deleteLabel(id) {
-      if (confirm('Delete this label?')) {
-        await api(`/api/labels/${id}`, { method: 'DELETE' });
-        allLabels = await api('/api/labels');
-        renderLabels();
-      }
-    }
-
-    // Sync all groups from Google Workspace
-    async function syncAllGroups() {
-      const msg = document.getElementById('sync-status');
-      msg.className = 'alert';
-      msg.textContent = 'Syncing groups from Google Workspace...';
-      msg.classList.remove('hidden');
-
-      try {
-        const result = await api('/api/sync-all-groups', { method: 'POST' });
-        msg.className = 'alert alert-success';
-        let statusText = `Sync complete: ${result.googleUsers || 0} users, ${result.googleGroups || 0} groups from Google. `;
-        statusText += `${result.memberships} memberships synced. `;
-        if (result.createdUsers) statusText += `${result.createdUsers} users created. `;
-        if (result.removedUsers) statusText += `${result.removedUsers} users removed. `;
-        if (result.createdGroups) statusText += `${result.createdGroups} groups created. `;
-        if (result.removedGroups) statusText += `${result.removedGroups} groups removed.`;
-        msg.textContent = statusText;
-        await loadAllData();
-        renderGroups();
-      } catch (e) {
-        msg.className = 'alert alert-error';
-        msg.textContent = e.message;
-      }
-    }
-
-    // Label access management
-    async function manageLabelAccess(labelId, labelName) {
-      document.getElementById('label-access-id').value = labelId;
-      document.getElementById('label-access-name').textContent = labelName;
-
-      // Populate dropdown
-      document.getElementById('add-group-to-label').innerHTML = '<option value="">-- Add Group --</option>' +
-        allGroups.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
-
-      // Load current access
-      const groups = await api(`/api/labels/${labelId}/groups`);
-
-      document.getElementById('label-groups-list').innerHTML = groups.map(g => `
-        <span class="tag">${g.name} <span style="cursor:pointer" onclick="removeGroupFromLabel(${labelId}, ${g.id})">×</span></span>
-      `).join('') || 'No groups';
-
-      document.getElementById('label-access-modal').classList.remove('hidden');
-    }
-
-    async function addGroupToLabel() {
-      const labelId = document.getElementById('label-access-id').value;
-      const groupId = document.getElementById('add-group-to-label').value;
-      if (groupId) {
-        await api(`/api/labels/${labelId}/groups/${groupId}`, { method: 'POST' });
-        manageLabelAccess(labelId, document.getElementById('label-access-name').textContent);
-        renderLabels();
-      }
-    }
-
-    async function removeGroupFromLabel(labelId, groupId) {
-      await api(`/api/labels/${labelId}/groups/${groupId}`, { method: 'DELETE' });
-      manageLabelAccess(labelId, document.getElementById('label-access-name').textContent);
-      renderLabels();
-    }
-
-    // Admin views
-    async function loadUserServers() {
-      const userId = document.getElementById('admin-user-select').value;
-      if (!userId) {
-        document.getElementById('admin-user-servers').classList.add('hidden');
-        return;
-      }
-      const servers = await api(`/api/user-servers/${userId}`);
-      document.getElementById('admin-user-servers-list').innerHTML = servers.length ? servers.map(s => {
-        let syncStatus;
-        if (!s.last_deployed_at) {
-          syncStatus = '<div class="sync-status"><span class="dot dot-gray"></span> Never deployed</div>';
-        } else if (s.is_up_to_date) {
-          syncStatus = '<div class="sync-status"><span class="dot dot-green"></span> Up to date</div>';
-        } else {
-          syncStatus = '<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync</div>';
-        }
-        return `<tr><td>${s.hostname}</td><td>${s.description || '-'}</td><td>${syncStatus}</td></tr>`;
-      }).join('') : '<tr><td colspan="3">No devices accessible</td></tr>';
-      document.getElementById('admin-user-servers').classList.remove('hidden');
-    }
-
-    async function loadServerAccess() {
-      const serverId = document.getElementById('admin-server-select').value;
-      if (!serverId) {
-        document.getElementById('server-access-info').classList.add('hidden');
-        return;
-      }
-      const access = await api(`/api/server-access/${serverId}`);
-
-      document.getElementById('server-access-users').innerHTML = access.users.map(u => `
-        <tr>
-          <td>${u.name || '-'}</td>
-          <td>${u.email}</td>
-          <td>${u.group_names.map(g => `<span class="tag">${g}</span>`).join(' ')}</td>
-          <td>${u.public_key ? '<span class="tag tag-green">Yes</span>' : '<span class="tag">No</span>'}</td>
-        </tr>
-      `).join('') || '<tr><td colspan="4">No users have access</td></tr>';
-
-      document.getElementById('server-access-info').classList.remove('hidden');
-    }
-
-    function viewUserAccess(userId) {
-      document.querySelector('[data-tab="access-admin"]').click();
-      document.getElementById('admin-user-select').value = userId;
-      loadUserServers();
-    }
-
-    // Start app
-    init();
-  </script>
+  let saved = null;
+  try { saved = localStorage.getItem('superkey-tab'); } catch (e) { /* private mode */ }
+  const tab = saved && $(saved);
+  showTab(tab && !tab.hidden ? tab : $('t-mine'));
+}
+init();
+</script>
 </body>
 </html>
