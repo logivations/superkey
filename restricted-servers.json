@@ -1,4 +1,10 @@
 {
-  "_doc": "Servers matching a rule here are RESTRICTED: only members of allowed_groups are deployed, regardless of label/group wiring in the UI. Changing this file requires a git commit, so widening access to a restricted server is always traceable. See src/restricted.js for the format.",
-  "restricted_servers": []
+  "_doc": "Servers matching a rule here are RESTRICTED: only members of allowed_groups / the emails in allowed_users are deployed, regardless of label/group wiring in the UI. When allowed_users is set, only those users may manage agent access to matching servers (admins are NOT exempt). Changing this file requires a git commit, so widening access to a restricted server is always traceable. See src/restricted.js for the format.",
+  "restricted_servers": [
+    {
+      "match": "mcpservers",
+      "allowed_users": ["johannes.plapp@lvairo.com"],
+      "allow_agents": true
+    }
+  ]
 }

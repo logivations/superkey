@@ -89,15 +89,21 @@ trace, but widening access to a restricted server requires a commit.
 ```json
 {
   "restricted_servers": [
-    { "match": "prod-*", "allowed_groups": ["infra_core"], "allow_agents": false }
+    { "match": "prod-*", "allowed_groups": ["infra_core"], "allow_agents": false },
+    { "match": "mcpservers", "allowed_users": ["johannes.plapp@lvairo.com"], "allow_agents": true }
   ]
 }
 ```
 
-`match` is a hostname glob (`*`/`?`). Multiple matching rules merge
-(union of groups, agents allowed if any rule allows). The policy is
-enforced in `/api/deploy-data` (authoritative), the access views, the
-manual setup download, and the UI actions that would contradict it.
+`match` is a hostname glob (`*`/`?`). `allowed_groups` members still need
+the usual label wiring; `allowed_users` emails are granted directly by the
+file (no label needed — group grants on such servers are refused). When
+`allowed_users` is set, ONLY those users may attach/detach agent labels
+touching the server — superkey admins are not exempt. Multiple matching
+rules merge (union of lists, agents allowed if any rule allows). The
+policy is enforced in `/api/deploy-data` (authoritative), the access
+views, the manual setup download, and the UI actions that would
+contradict it.
 
 ## Agents
 

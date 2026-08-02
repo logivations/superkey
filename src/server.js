@@ -93,17 +93,29 @@ function serverAuthorizedUsers(server) {
       ORDER BY u.email
     `).all(server.id);
   }
-  if (policy.allowed_groups.length === 0) return [];
-  const placeholders = policy.allowed_groups.map(() => '?').join(',');
-  return db.prepare(`
-    SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
-    JOIN user_groups ug ON u.id = ug.user_id
-    JOIN groups g ON g.id = ug.group_id
-    JOIN label_groups lg ON ug.group_id = lg.group_id
-    JOIN server_labels sl ON lg.label_id = sl.label_id
-    WHERE sl.server_id = ? AND g.name IN (${placeholders})
-    ORDER BY u.email
-  `).all(server.id, ...policy.allowed_groups);
+  const byId = new Map();
+  // Group path: label wiring as usual, but only allowed groups count.
+  if (policy.allowed_groups.length > 0) {
+    const placeholders = policy.allowed_groups.map(() => '?').join(',');
+    for (const u of db.prepare(`
+      SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
+      JOIN user_groups ug ON u.id = ug.user_id
+      JOIN groups g ON g.id = ug.group_id
+      JOIN label_groups lg ON ug.group_id = lg.group_id
+      JOIN server_labels sl ON lg.label_id = sl.label_id
+      WHERE sl.server_id = ? AND g.name IN (${placeholders})
+    `).all(server.id, ...policy.allowed_groups)) byId.set(u.id, u);
+  }
+  // Direct path: emails listed in restricted-servers.json are authorized
+  // by the file itself — no label/group wiring needed (or possible: for
+  // user-restricted servers, group grants are refused).
+  for (const email of policy.allowed_users) {
+    const u = db.prepare(
+      'SELECT id, email, name, public_key FROM users WHERE lower(email) = ?'
+    ).get(email);
+    if (u) byId.set(u.id, u);
+  }
+  return [...byId.values()].sort((a, b) => a.email.localeCompare(b.email));
 }
 
 // Team agents to deploy on a server (shared with /api/deploy-data and the
@@ -737,11 +749,12 @@ app.post('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => 
   const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(req.params.agentId);
   const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(req.params.labelId);
   if (!agent || !label) return res.status(404).json({ error: 'Agent or label not found' });
-  const noAgents = restrictedServersWithLabel(label.id).filter(x => !x.policy.allow_agents);
-  if (noAgents.length > 0) {
+  const blocked = restrictedServersWithLabel(label.id)
+    .filter(x => !restricted.userMayManageAgents(x.policy, req.user.email));
+  if (blocked.length > 0) {
     return res.status(403).json({
-      error: `Label is attached to restricted server(s) ${noAgents.map(x => x.server.hostname).join(', ')} ` +
-        `which do not allow team agents (allow_agents in restricted-servers.json).`
+      error: `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
+        `where you may not manage agent access (see restricted-servers.json: allow_agents / allowed_users).`
     });
   }
   db.prepare('INSERT OR IGNORE INTO agent_labels (agent_id, label_id) VALUES (?, ?)').run(agent.id, label.id);
@@ -751,6 +764,17 @@ app.post('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => 
 app.delete('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
   if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, req.params.labelId)) {
     return res.status(403).json({ error: 'You can only remove labels you have access to yourself.' });
+  }
+  // Removing is narrowing, so only the allowed_users exclusivity applies
+  // (cleanup on allow_agents=false servers must stay possible).
+  const blocked = restrictedServersWithLabel(req.params.labelId)
+    .filter(x => x.policy.allowed_users.length > 0
+      && !x.policy.allowed_users.includes((req.user.email || '').toLowerCase()));
+  if (blocked.length > 0) {
+    return res.status(403).json({
+      error: `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
+        `where only allowed_users (restricted-servers.json) may manage agent access.`
+    });
   }
   db.prepare('DELETE FROM agent_labels WHERE agent_id = ? AND label_id = ?').run(req.params.agentId, req.params.labelId);
   res.json({ success: true });
@@ -1135,20 +1159,35 @@ function serversVisibleToUser(servers, userId) {
     JOIN user_groups ug ON g.id = ug.group_id
     WHERE ug.user_id = ?
   `).all(userId).map(r => r.name);
-  return servers
-    .filter(s => {
-      const policy = restricted.policyFor(s.hostname);
-      return !policy || policy.allowed_groups.some(g => groupNames.includes(g));
-    })
-    .map(s => {
-      const expectedHash = computeServerKeysHash(s);
-      return {
-        ...s,
-        expected_keys_hash: expectedHash,
-        is_up_to_date: s.deployed_keys_hash === expectedHash,
-        restricted: !!restricted.policyFor(s.hostname)
-      };
-    });
+  const user = db.prepare('SELECT email FROM users WHERE id = ?').get(userId);
+  const email = (user?.email || '').toLowerCase();
+
+  const kept = servers.filter(s => {
+    const policy = restricted.policyFor(s.hostname);
+    return !policy
+      || policy.allowed_groups.some(g => groupNames.includes(g))
+      || policy.allowed_users.includes(email);
+  });
+
+  // Servers granted directly via allowed_users have no label path and are
+  // missing from the label-based query — add them.
+  const seen = new Set(kept.map(s => s.id));
+  for (const s of db.prepare('SELECT * FROM servers ORDER BY hostname COLLATE NOCASE').all()) {
+    if (seen.has(s.id)) continue;
+    const policy = restricted.policyFor(s.hostname);
+    if (policy && policy.allowed_users.includes(email)) kept.push(s);
+  }
+  kept.sort((a, b) => a.hostname.localeCompare(b.hostname, undefined, { sensitivity: 'base' }));
+
+  return kept.map(s => {
+    const expectedHash = computeServerKeysHash(s);
+    return {
+      ...s,
+      expected_keys_hash: expectedHash,
+      is_up_to_date: s.deployed_keys_hash === expectedHash,
+      restricted: !!restricted.policyFor(s.hostname)
+    };
+  });
 }
 
 // Access views
@@ -1193,8 +1232,15 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
     ORDER BY g.name COLLATE NOCASE
   `).all(req.params.serverId);
   // On a restricted server only memberships in allowed groups grant access,
-  // so only those are shown.
+  // so only those are shown. Users granted directly via allowed_users are
+  // appended below.
   if (policy) rows = rows.filter(r => policy.allowed_groups.includes(r.group_name));
+  if (policy) {
+    for (const email of policy.allowed_users) {
+      const u = db.prepare('SELECT id, email, name, public_key FROM users WHERE lower(email) = ?').get(email);
+      if (u) rows.push({ ...u, group_name: 'restricted-servers.json' });
+    }
+  }
 
   const byUser = new Map();
   for (const r of rows) {
