@@ -26,6 +26,14 @@ fi
 
 CHANGED=false
 
+# --- dependencies -------------------------------------------------------------
+# deploy.sh needs jq; a missing jq fails in confusing ways (its stderr is
+# often redirected away).
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Installing jq..."
+    apt-get install -y jq >/dev/null 2>&1 || echo "WARNING: could not install jq"
+fi
+
 # --- Machine deploy keypair -------------------------------------------------
 if [ ! -f "$KEY_FILE" ]; then
     echo "Generating machine deploy keypair at $KEY_FILE..."
@@ -102,8 +110,10 @@ write_unit /etc/systemd/system/superkey-deploy.timer "[Unit]
 Description=Superkey: check for stale servers every minute
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
+# OnCalendar (not OnBootSec/OnUnitActiveSec): fires regardless of when the
+# timer was enabled — OnUnitActiveSec never arms without a prior activation.
+OnCalendar=*-*-* *:*:00
+Persistent=true
 
 [Install]
 WantedBy=timers.target"
