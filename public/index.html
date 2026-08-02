@@ -65,6 +65,8 @@
     .logos img { height: 32px; width: auto; }
     .login-logos { display: flex; justify-content: center; align-items: center; gap: 20px; margin-bottom: 30px; }
     .login-logos img { height: 40px; width: auto; }
+    .search-input { width: 100%; max-width: 320px; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; margin-bottom: 15px; }
+    .search-input:focus { outline: none; border-color: #1a73e8; }
   </style>
 </head>
 <body>
@@ -250,6 +252,7 @@
               <span id="ssh-configs-commit-date" style="color: #666; font-size: 0.9em;">Loading SSH configs...</span>
             </div>
             <div id="import-status" class="alert hidden" style="margin-bottom: 15px;"></div>
+            <input type="search" id="filter-devices" class="search-input" placeholder="Filter by hostname, description or label…" oninput="setFilter('devices', this.value)">
             <table>
               <thead>
                 <tr><th>Hostname</th><th>Description</th><th>Labels</th><th>Sync Status</th><th>Actions</th></tr>
@@ -266,6 +269,7 @@
               <h2>Labels</h2>
               <button class="btn btn-primary" onclick="showAddLabelModal()">Add Label</button>
             </div>
+            <input type="search" id="filter-labels" class="search-input" placeholder="Filter by label name…" oninput="setFilter('labels', this.value)">
             <table>
               <thead>
                 <tr><th>Name</th><th>Groups with Access</th><th>Actions</th></tr>
@@ -286,6 +290,7 @@
             <p style="margin-bottom: 15px; color: #666; font-size: 0.9rem;">
               Group membership is synced from Google Workspace. Set up a service account for automatic sync.
             </p>
+            <input type="search" id="filter-groups" class="search-input" placeholder="Filter by group name or email…" oninput="setFilter('groups', this.value)">
             <table>
               <thead>
                 <tr><th>Name</th><th>Google Group Email</th><th>Members</th></tr>
@@ -299,6 +304,7 @@
         <div id="tab-users" class="tab-content hidden">
           <div class="card">
             <h2>Users</h2>
+            <input type="search" id="filter-users" class="search-input" placeholder="Filter by name or email…" oninput="setFilter('users', this.value)">
             <table>
               <thead>
                 <tr><th>Name</th><th>Email</th><th>Has Public Key</th><th>Actions</th></tr>
@@ -707,6 +713,23 @@
       }).join('') : '<tr><td colspan="3">No devices accessible</td></tr>';
     }
 
+    // Table filters (admin tabs)
+    const filters = { devices: '', labels: '', groups: '', users: '' };
+
+    function setFilter(which, value) {
+      filters[which] = value.trim().toLowerCase();
+      if (which === 'devices') renderServers();
+      else if (which === 'labels') renderLabels();
+      else if (which === 'groups') renderGroups();
+      else if (which === 'users') renderUsers();
+    }
+
+    function matchesFilter(which, ...fields) {
+      const q = filters[which];
+      if (!q) return true;
+      return fields.some(f => String(f || '').toLowerCase().includes(q));
+    }
+
     // Load all data (admin)
     async function loadAllData() {
       [allUsers, allGroups, allLabels, allServers] = await Promise.all([
@@ -723,7 +746,8 @@
     }
 
     function renderServers() {
-      document.getElementById('servers-list').innerHTML = allServers.map(s => {
+      const visibleServers = allServers.filter(s => matchesFilter('devices', s.hostname, s.description, s.labels.join(' ')));
+      document.getElementById('servers-list').innerHTML = visibleServers.map(s => {
         let syncStatus;
         if (!s.last_deployed_at) {
           syncStatus = '<div class="sync-status"><span class="dot dot-gray"></span> Never deployed</div>';
@@ -749,11 +773,14 @@
             </td>
           </tr>
         `;
-      }).join('');
+      }).join('') || `<tr><td colspan="5" style="color:#999">${filters.devices ? 'No devices match the filter' : 'No devices'}</td></tr>`;
     }
 
+    let labelsRenderToken = 0;
     async function renderLabels() {
-      const rows = await Promise.all(allLabels.map(async l => {
+      const token = ++labelsRenderToken;
+      const visibleLabels = allLabels.filter(l => matchesFilter('labels', l.name));
+      const rows = await Promise.all(visibleLabels.map(async l => {
         const groups = await api(`/api/labels/${l.id}/groups`);
         return `
           <tr>
@@ -766,11 +793,15 @@
           </tr>
         `;
       }));
-      document.getElementById('labels-list').innerHTML = rows.join('');
+      if (token !== labelsRenderToken) return;
+      document.getElementById('labels-list').innerHTML = rows.join('') || `<tr><td colspan="3" style="color:#999">${filters.labels ? 'No labels match the filter' : 'No labels'}</td></tr>`;
     }
 
+    let groupsRenderToken = 0;
     async function renderGroups() {
-      const rows = await Promise.all(allGroups.map(async g => {
+      const token = ++groupsRenderToken;
+      const visibleGroups = allGroups.filter(g => matchesFilter('groups', g.name, g.google_group_email));
+      const rows = await Promise.all(visibleGroups.map(async g => {
         const members = await api(`/api/groups/${g.id}/users`);
         return `
           <tr>
@@ -780,18 +811,20 @@
           </tr>
         `;
       }));
-      document.getElementById('groups-list').innerHTML = rows.join('');
+      if (token !== groupsRenderToken) return;
+      document.getElementById('groups-list').innerHTML = rows.join('') || `<tr><td colspan="3" style="color:#999">${filters.groups ? 'No groups match the filter' : 'No groups'}</td></tr>`;
     }
 
     function renderUsers() {
-      document.getElementById('users-list').innerHTML = allUsers.map(u => `
+      const visibleUsers = allUsers.filter(u => matchesFilter('users', u.name, u.email));
+      document.getElementById('users-list').innerHTML = visibleUsers.map(u => `
         <tr>
           <td>${u.name || '-'}</td>
           <td>${u.email}</td>
           <td>${u.public_key ? '<span class="tag tag-green">Yes</span>' : '<span class="tag">No</span>'}</td>
           <td><button class="btn btn-small btn-secondary" onclick="viewUserAccess(${u.id})">View Access</button></td>
         </tr>
-      `).join('');
+      `).join('') || `<tr><td colspan="4" style="color:#999">${filters.users ? 'No users match the filter' : 'No users'}</td></tr>`;
     }
 
     function populateAdminSelects() {
