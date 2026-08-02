@@ -57,6 +57,14 @@ if ! grep -q '^DEPLOY_API_TOKEN=..*' "$ENV_FILE"; then
 fi
 set_env DEPLOY_PUBKEY "$PUBKEY"
 
+# --- tailscale ---------------------------------------------------------------
+# Customer-LAN devices are reached via subnet routers; on Linux accepting
+# their routes is opt-in. (Reachability itself comes from tag:superkey in
+# the tailscale ACL — see lvairo/tailscale_acl.)
+if command -v tailscale >/dev/null 2>&1; then
+    tailscale set --accept-routes 2>/dev/null || true
+fi
+
 # --- ssh client config ----------------------------------------------------
 # Fleet hostnames (muc-amr.cs, ...) resolve via the ssh-configs in the
 # hostnames repo, same as on admin laptops. accept-new host keys: first
