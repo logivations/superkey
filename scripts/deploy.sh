@@ -90,24 +90,27 @@ process_server() {
     echo "Processing server: $HOSTNAME"
     [ -n "$DESCRIPTION" ] && echo "  Description: $DESCRIPTION"
 
-    # Check if any users are configured for this server
-    local USER_COUNT
+    # Check if any users or team agents are configured for this server
+    local USER_COUNT AGENT_COUNT
     USER_COUNT=$(echo "$server" | jq '.users | length')
-    if [ "$USER_COUNT" -eq 0 ] || [ -z "$USER_COUNT" ]; then
-        echo "  No users configured for this server, skipping..."
+    AGENT_COUNT=$(echo "$server" | jq '.agents // [] | length')
+    if [ "${USER_COUNT:-0}" -eq 0 ] && [ "${AGENT_COUNT:-0}" -eq 0 ]; then
+        echo "  No users or agents configured for this server, skipping..."
         return 0
     fi
 
     # Build list of authorized usernames for this server: human accounts
-    # (derived from email) plus their bot accounts (computed server-side).
-    # The revoke pass below locks anything in the superkey group that isn't
-    # in this list, so both kinds must be present here.
+    # (derived from email), their personal-agent accounts, and team-agent
+    # accounts (both computed server-side). The revoke pass below locks
+    # anything in the superkey group that isn't in this list, so all three
+    # kinds must be present here.
     local AUTHORIZED_USERS
     AUTHORIZED_USERS=$( {
         echo "$server" | jq -r '.users[] | .email' | while read -r email; do
             echo "$email" | cut -d'@' -f1 | tr '.' '_'
         done
         echo "$server" | jq -r '.users[].bots[]?.account'
+        echo "$server" | jq -r '.agents[]?.account'
     } | sort -u | tr '\n' ' ')
 
     # Test SSH connection (use DEPLOY_USER)
@@ -168,6 +171,30 @@ process_server() {
             USER_CALLS+=$'\n'
         done < <(echo "$user" | jq -c '.bots[]?')
     done < <(echo "$server" | jq -c '.users[]')
+
+    # Team agents (label-granted, no owning user) — provisioned exactly like
+    # bot accounts: unprivileged, hardened key, superkey/adm/systemd-journal.
+    while read -r agent; do
+        [ -z "$agent" ] && continue
+        local AACCT AKEY AOPTS ANAME
+        AACCT=$(echo "$agent" | jq -r '.account')
+        AKEY=$(echo "$agent" | jq -r '.public_key // ""')
+        AOPTS=$(echo "$agent" | jq -r '.key_options // "restrict,pty"')
+        ANAME=$(echo "$agent" | jq -r '.name')
+
+        if [ -z "$AKEY" ]; then
+            continue
+        fi
+
+        if [ "$DRY_RUN" = true ]; then
+            echo "    [DRY RUN] Would set up team agent $AACCT ($ANAME)"
+            continue
+        fi
+
+        USER_CALLS+=$(printf 'setup_bot %q %q %q %q || OVERALL_STATUS=1\n' \
+            "$AACCT" "$ANAME" "$AKEY" "$AOPTS")
+        USER_CALLS+=$'\n'
+    done < <(echo "$server" | jq -c '.agents[]?')
 
     local user_failed=0
     if [ "$DRY_RUN" = true ]; then

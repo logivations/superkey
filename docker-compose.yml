@@ -16,6 +16,9 @@ services:
       - GOOGLE_SERVICE_ACCOUNT_KEY=/app/credentials.json
       - GOOGLE_ADMIN_EMAIL=${GOOGLE_ADMIN_EMAIL}
       - SESSION_SECRET=${SESSION_SECRET}
+      # Machine token for nemo team-agent auto-registration
+      # (POST /api/agents/register). Empty = agent API disabled.
+      - AGENT_API_TOKEN=${AGENT_API_TOKEN:-}
       - NODE_ENV=production
     restart: unless-stopped
 

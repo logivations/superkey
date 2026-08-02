@@ -101,7 +101,8 @@
       <nav>
         <ul>
           <li class="active" data-tab="my-key">My Key</li>
-          <li data-tab="my-bots">My Bots</li>
+          <li data-tab="my-bots">My Agents</li>
+          <li data-tab="team-agents">Team Agents</li>
           <li data-tab="my-access">My Access</li>
           <li class="admin-only hidden" data-tab="devices">Devices</li>
           <li class="admin-only hidden" data-tab="labels">Labels</li>
@@ -169,52 +170,75 @@
           </div>
         </div>
 
-        <!-- My Bots Tab -->
+        <!-- My Agents (personal) Tab -->
         <div id="tab-my-bots" class="tab-content hidden">
           <div class="card">
-            <h2>My Bots</h2>
+            <h2>My Agents</h2>
             <p style="margin-bottom: 15px; color: #666;">
-              A bot is an automation agent (e.g. <strong>nemo</strong>) that runs as <em>you</em>.
-              Each bot gets its own SSH key and logs in as a dedicated, unprivileged account
-              (<code>&lt;you&gt;_&lt;bot&gt;</code>) on exactly the devices <strong>you</strong> can already reach.
-              A bot can never have more access than you do, and you can revoke it any time.
+              A personal agent (e.g. your <strong>nemo</strong>) runs as <em>you</em>.
+              Each agent gets its own SSH key and logs in as a dedicated, unprivileged account
+              (<code>&lt;you&gt;_&lt;agent&gt;</code>) on exactly the devices <strong>you</strong> can already reach.
+              A personal agent can never have more access than you do, and you can revoke it any time.
+              (Shared <em>team agents</em>, with label-based access, live in the Team Agents tab.)
             </p>
             <table>
               <thead>
-                <tr><th>Bot</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th>Actions</th></tr>
+                <tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th>Actions</th></tr>
               </thead>
               <tbody id="my-bots-list"></tbody>
             </table>
           </div>
 
           <div class="card">
-            <h2>Add / Rotate a Bot Key</h2>
+            <h2>Add / Rotate an Agent Key</h2>
             <div class="form-group">
-              <label for="bot-name">Bot name (a-z, 0-9, _ — e.g. <code>nemo</code>):</label>
+              <label for="bot-name">Agent name (a-z, 0-9, _ — e.g. <code>nemo</code>):</label>
               <input type="text" id="bot-name" placeholder="nemo" style="width: 100%; padding: 8px;">
             </div>
             <div class="form-group">
-              <label for="bot-key">Bot's SSH public key:</label>
-              <textarea id="bot-key" placeholder="ssh-ed25519 AAAA... nemo@bot-host"></textarea>
+              <label for="bot-key">Agent's SSH public key:</label>
+              <textarea id="bot-key" placeholder="ssh-ed25519 AAAA... nemo@agent-host"></textarea>
             </div>
             <div class="form-group">
               <label for="bot-source">Restrict to source IP/CIDR (optional, recommended):</label>
               <input type="text" id="bot-source" placeholder="e.g. 10.0.0.5 or 10.0.0.0/24" style="width: 100%; padding: 8px;">
             </div>
-            <button class="btn btn-primary" onclick="addBot()">Save Bot</button>
+            <button class="btn btn-primary" onclick="addBot()">Save Agent</button>
             <div id="bot-message" class="alert hidden" style="margin-top: 15px;"></div>
 
             <div class="instructions" style="margin-top: 20px;">
-              <h4 style="margin-bottom: 10px;">Generate a key on the bot's host</h4>
-              <p style="margin-bottom: 10px; color: #666;">On the machine that runs the bot, create a dedicated keypair and paste the <code>.pub</code> here:</p>
+              <h4 style="margin-bottom: 10px;">Generate a key on the agent's host</h4>
+              <p style="margin-bottom: 10px; color: #666;">On the machine that runs the agent, create a dedicated keypair and paste the <code>.pub</code> here:</p>
               <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 15px; font-family: monospace; font-size: 0.9rem;">
-                ssh-keygen -t ed25519 -f ~/.ssh/id_nemo -C "nemo bot"<br>
+                ssh-keygen -t ed25519 -f ~/.ssh/id_nemo -C "nemo agent"<br>
                 cat ~/.ssh/id_nemo.pub
               </div>
               <div style="background: #fff3cd; padding: 12px; border-radius: 4px; color: #856404;">
-                <strong>Keep the private key on the bot host only.</strong> Never reuse your personal key for a bot, and prefer setting a source restriction so a leaked key is useless elsewhere.
+                <strong>Keep the private key on the agent host only.</strong> Never reuse your personal key for an agent, and prefer setting a source restriction so a leaked key is useless elsewhere.
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Team Agents Tab -->
+        <div id="tab-team-agents" class="tab-content hidden">
+          <div class="card">
+            <h2>Team Agents</h2>
+            <p style="margin-bottom: 15px; color: #666;">
+              Team agents are shared nemo agents. They register themselves automatically
+              with <strong>no access</strong>; access is granted per <strong>label</strong> —
+              an agent can reach exactly the devices carrying its labels, as the unprivileged
+              account <code>agent_&lt;name&gt;</code>. You can attach or remove the labels
+              <strong>you</strong> have access to yourself (admins: any label). Changes apply
+              on the next deploy.
+            </p>
+            <div id="agent-message" class="alert hidden" style="margin-bottom: 15px;"></div>
+            <table>
+              <thead>
+                <tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Labels</th><th>Actions</th></tr>
+              </thead>
+              <tbody id="team-agents-list"></tbody>
+            </table>
           </div>
         </div>
 
@@ -372,6 +396,31 @@
     </div>
   </div>
 
+  <!-- Manage Team Agent Labels Modal -->
+  <div id="agent-labels-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Labels: <span id="agent-labels-name"></span></h3>
+        <span class="modal-close" onclick="closeModal('agent-labels-modal')">&times;</span>
+      </div>
+      <input type="hidden" id="agent-labels-id">
+      <p style="margin-bottom: 15px; color: #666; font-size: 0.9rem;">
+        The agent can reach every device carrying one of these labels.
+        You can only attach labels you have access to yourself.
+      </p>
+      <div class="access-section">
+        <h4>Labels</h4>
+        <div class="flex-row" style="margin-bottom: 10px;">
+          <select id="add-label-to-agent">
+            <option value="">-- Add Label --</option>
+          </select>
+          <button class="btn btn-small btn-primary" onclick="addLabelToAgent()">Add</button>
+        </div>
+        <div id="agent-labels-list"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Manage Label Access Modal -->
   <div id="label-access-modal" class="modal hidden">
     <div class="modal-content">
@@ -433,6 +482,7 @@
       document.getElementById('public-key').value = currentUser.public_key || '';
       loadMyServers();
       loadMyBots();
+      loadTeamAgents();
       if (currentUser.isAdmin) {
         loadAllData();
         startAutoImport();
@@ -532,7 +582,7 @@
       try {
         await api('/api/me/bots', { method: 'POST', body: JSON.stringify({ name, publicKey, sourceCidr }) });
         msg.className = 'alert alert-success';
-        msg.textContent = `Bot "${name}" saved. It will be provisioned on your devices on the next deploy.`;
+        msg.textContent = `Agent "${name}" saved. It will be provisioned on your devices on the next deploy.`;
         document.getElementById('bot-key').value = '';
         loadMyBots();
       } catch (e) {
@@ -543,18 +593,101 @@
     }
 
     async function revokeBot(id, name) {
-      if (!confirm(`Revoke bot "${name}"? Its access is removed on the next deploy.`)) return;
+      if (!confirm(`Revoke agent "${name}"? Its access is removed on the next deploy.`)) return;
       const msg = document.getElementById('bot-message');
       try {
         await api('/api/me/bots/' + id, { method: 'DELETE' });
         msg.className = 'alert alert-success';
-        msg.textContent = `Bot "${name}" revoked.`;
+        msg.textContent = `Agent "${name}" revoked.`;
         loadMyBots();
       } catch (e) {
         msg.className = 'alert alert-error';
         msg.textContent = e.message;
       }
       msg.classList.remove('hidden');
+    }
+
+    // Team agents
+    let teamAgents = [];
+    let grantableLabels = [];
+
+    function agentFlash(text, isError) {
+      const msg = document.getElementById('agent-message');
+      msg.className = isError ? 'alert alert-error' : 'alert alert-success';
+      msg.textContent = text;
+      msg.classList.remove('hidden');
+    }
+
+    async function loadTeamAgents() {
+      try {
+        [teamAgents, grantableLabels] = await Promise.all([
+          api('/api/agents'),
+          api('/api/me/labels')
+        ]);
+      } catch { return; }
+      const list = document.getElementById('team-agents-list');
+      list.innerHTML = teamAgents.length ? teamAgents.map(a => `
+        <tr>
+          <td>${escHtml(a.name)}${a.description ? `<br><span style="color:#999;font-size:0.85rem">${escHtml(a.description)}</span>` : ''}</td>
+          <td><code>${escHtml(a.account)}</code></td>
+          <td style="font-family: monospace; font-size: 0.85rem;">${keySummary(a.public_key)}</td>
+          <td>${a.labels.map(l => `<span class="tag">${escHtml(l.name)}</span>`).join('') || '<span style="color:#999">No access</span>'}</td>
+          <td>
+            <button class="btn btn-small btn-secondary" onclick="manageAgentLabels(${a.id})">Labels</button>
+            ${currentUser.isAdmin ? `<button class="btn btn-small btn-danger" onclick="deleteAgent(${a.id}, '${escHtml(a.name)}')">Delete</button>` : ''}
+          </td>
+        </tr>`).join('') : '<tr><td colspan="5">No team agents registered yet</td></tr>';
+    }
+
+    function manageAgentLabels(agentId) {
+      const agent = teamAgents.find(a => a.id === agentId);
+      if (!agent) return;
+      document.getElementById('agent-labels-id').value = agentId;
+      document.getElementById('agent-labels-name').textContent = agent.name;
+
+      const attachedIds = new Set(agent.labels.map(l => l.id));
+      const addable = grantableLabels.filter(l => !attachedIds.has(l.id));
+      document.getElementById('add-label-to-agent').innerHTML = '<option value="">-- Add Label --</option>' +
+        addable.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('');
+
+      const removableIds = new Set(grantableLabels.map(l => l.id));
+      document.getElementById('agent-labels-list').innerHTML = agent.labels.length
+        ? agent.labels.map(l => {
+            const removable = currentUser.isAdmin || removableIds.has(l.id);
+            const x = removable ? ` <span style="cursor:pointer" onclick="removeLabelFromAgent(${agentId}, ${l.id})">×</span>` : '';
+            return `<span class="tag">${escHtml(l.name)}${x}</span>`;
+          }).join('')
+        : '<span style="color:#999">No labels — the agent has no access</span>';
+
+      document.getElementById('agent-labels-modal').classList.remove('hidden');
+    }
+
+    async function addLabelToAgent() {
+      const agentId = parseInt(document.getElementById('agent-labels-id').value);
+      const labelId = document.getElementById('add-label-to-agent').value;
+      if (!labelId) return;
+      try {
+        await api(`/api/agents/${agentId}/labels/${labelId}`, { method: 'POST' });
+        await loadTeamAgents();
+        manageAgentLabels(agentId);
+      } catch (e) { agentFlash(e.message, true); closeModal('agent-labels-modal'); }
+    }
+
+    async function removeLabelFromAgent(agentId, labelId) {
+      try {
+        await api(`/api/agents/${agentId}/labels/${labelId}`, { method: 'DELETE' });
+        await loadTeamAgents();
+        manageAgentLabels(agentId);
+      } catch (e) { agentFlash(e.message, true); closeModal('agent-labels-modal'); }
+    }
+
+    async function deleteAgent(id, name) {
+      if (!confirm(`Delete team agent "${name}"? Its accounts are locked on the next deploy.`)) return;
+      try {
+        await api('/api/agents/' + id, { method: 'DELETE' });
+        agentFlash(`Agent "${name}" deleted.`);
+        loadTeamAgents();
+      } catch (e) { agentFlash(e.message, true); }
     }
 
     // My servers

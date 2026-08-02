@@ -62,11 +62,11 @@ db.exec(`
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
   );
 
-  -- Per-user bot keys (e.g. a "nemo" automation agent owned by a user).
-  -- Each bot is deployed as a separate, unprivileged Linux account
+  -- Per-user bot keys (a user's PERSONAL agent, e.g. their "nemo").
+  -- Each is deployed as a separate, unprivileged Linux account
   -- (<user>_<name>) on exactly the servers the owning user can already
   -- reach. Access is derived from the owner, so a user can never grant a
-  -- bot more than they have themselves.
+  -- personal agent more than they have themselves.
   CREATE TABLE IF NOT EXISTS bot_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -76,6 +76,29 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (user_id, name)
+  );
+
+  -- TEAM agents (nemo agents): not owned by a user, registered by the
+  -- nemo dispatcher through the machine API with no access at all.
+  -- Access is granted per label (agent_labels), like groups get labels —
+  -- an agent reaches exactly the servers carrying its labels, as the
+  -- unprivileged account agent_<name>.
+  CREATE TABLE IF NOT EXISTS team_agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    public_key TEXT NOT NULL,
+    source_cidr TEXT,
+    description TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_labels (
+    agent_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, label_id),
+    FOREIGN KEY (agent_id) REFERENCES team_agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE
   );
 `);
 

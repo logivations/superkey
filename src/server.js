@@ -17,9 +17,16 @@ function emailToUsername(email) {
   return email.split('@')[0].replace(/\./g, '_');
 }
 
-// The dedicated, unprivileged Linux account a user's bot logs in as.
+// The dedicated, unprivileged Linux account a user's personal agent logs in as.
 function botAccount(email, botName) {
   return `${emailToUsername(email)}_${botName}`;
+}
+
+// The Linux account a TEAM agent logs in as. Team agents have no owning
+// user; the fixed prefix keeps them recognizable on a host and apart from
+// <user>_<bot> personal-agent accounts.
+function agentAccount(name) {
+  return `agent_${name}`;
 }
 
 // authorized_keys option prefix for a bot key. Bots are non-interactive
@@ -89,11 +96,37 @@ function computeServerKeysHash(serverId) {
     WHERE sl.server_id = ?
     ORDER BY u.email, bk.name
   `).all(serverId);
+  // Team agents with access to this server via their labels.
+  const agents = db.prepare(`
+    SELECT DISTINCT a.name, a.public_key, a.source_cidr FROM team_agents a
+    JOIN agent_labels al ON a.id = al.agent_id
+    JOIN server_labels sl ON al.label_id = sl.label_id
+    WHERE sl.server_id = ?
+    ORDER BY a.name
+  `).all(serverId);
   const data = [
     ...users.map(u => `${u.email}:${u.public_key}`),
-    ...bots.map(b => `${b.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`)
+    ...bots.map(b => `${b.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`),
+    ...agents.map(a => `agent/${a.name}:${a.public_key}:${a.source_cidr || ''}`)
   ].join('\n');
   return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+}
+
+// Team agents to deploy on a server (shared with /api/deploy-data and the
+// admin access view).
+function serverTeamAgents(serverId) {
+  return db.prepare(`
+    SELECT DISTINCT a.name, a.public_key, a.source_cidr FROM team_agents a
+    JOIN agent_labels al ON a.id = al.agent_id
+    JOIN server_labels sl ON al.label_id = sl.label_id
+    WHERE sl.server_id = ?
+    ORDER BY a.name
+  `).all(serverId).map(a => ({
+    name: a.name,
+    account: agentAccount(a.name),
+    public_key: a.public_key,
+    key_options: botKeyOptions(a.source_cidr)
+  }));
 }
 
 const app = express();
@@ -445,6 +478,39 @@ function isAdmin(req, res, next) {
   res.status(403).json({ error: 'Admin access required' });
 }
 
+function isAdminUser(userId) {
+  return !!db.prepare(`
+    SELECT g.id FROM groups g
+    JOIN user_groups ug ON g.id = ug.group_id
+    WHERE g.name = 'superkey_admins' AND ug.user_id = ?
+  `).get(userId);
+}
+
+// Whether a user has access to a label's servers themselves (via any of
+// their groups). Users may only grant team agents labels they hold — the
+// same "you can't hand out more than you have" rule personal agents get
+// by inheritance. Admins bypass this.
+function userHasLabel(userId, labelId) {
+  return !!db.prepare(`
+    SELECT 1 FROM label_groups lg
+    JOIN user_groups ug ON lg.group_id = ug.group_id
+    WHERE lg.label_id = ? AND ug.user_id = ?
+  `).get(labelId, userId);
+}
+
+// Machine auth for the nemo dispatcher (agent auto-registration). A single
+// bearer token from the environment; no session, no user.
+function isAgentApi(req, res, next) {
+  const token = process.env.AGENT_API_TOKEN;
+  if (!token) return res.status(503).json({ error: 'Agent API not configured (AGENT_API_TOKEN unset)' });
+  const header = req.headers.authorization || '';
+  const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const a = Buffer.from(provided);
+  const b = Buffer.from(token);
+  if (a.length === b.length && crypto.timingSafeEqual(a, b)) return next();
+  res.status(401).json({ error: 'Bad agent API token' });
+}
+
 // Auth routes
 app.get('/auth/google', passport.authenticate('google', {
   scope: ['profile', 'email'],
@@ -568,6 +634,99 @@ app.post('/api/me/bots', isAuthenticated, (req, res) => {
 app.delete('/api/me/bots/:id', isAuthenticated, (req, res) => {
   const result = db.prepare('DELETE FROM bot_keys WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Bot not found' });
+  res.json({ success: true });
+});
+
+// ---- Team agents ----------------------------------------------------------
+// Registered by the nemo dispatcher (machine token), never by a user. A
+// fresh registration has NO access; signed-in users then attach labels.
+
+// Machine registration/rotation. Upsert by name so re-registering with a
+// new key rotates it; labels are never touched here.
+app.post('/api/agents/register', isAgentApi, (req, res) => {
+  const name = sanitizeBotName(req.body.name);
+  const publicKey = typeof req.body.publicKey === 'string' ? req.body.publicKey.trim() : '';
+  const sourceCidr = (req.body.sourceCidr || '').trim();
+  const description = typeof req.body.description === 'string' ? req.body.description.slice(0, 200) : null;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Invalid agent name (use 1-20 chars: a-z, 0-9, _, starting with a letter).' });
+  }
+  if (!isValidPublicKey(publicKey)) {
+    return res.status(400).json({ error: 'Invalid SSH public key (expected a single line like "ssh-ed25519 AAAA...").' });
+  }
+  if (!isValidSourceList(sourceCidr)) {
+    return res.status(400).json({ error: 'Invalid source restriction (use comma-separated IPs/CIDRs).' });
+  }
+
+  db.prepare(`
+    INSERT INTO team_agents (name, public_key, source_cidr, description)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT (name) DO UPDATE SET
+      public_key = excluded.public_key,
+      source_cidr = excluded.source_cidr,
+      description = COALESCE(excluded.description, description),
+      updated_at = CURRENT_TIMESTAMP
+  `).run(name, publicKey, sourceCidr || null, description);
+
+  const agent = db.prepare('SELECT id, name, created_at FROM team_agents WHERE name = ?').get(name);
+  res.json({ ...agent, account: agentAccount(agent.name) });
+});
+
+app.get('/api/agents', isAuthenticated, (req, res) => {
+  const agents = db.prepare(`
+    SELECT a.id, a.name, a.public_key, a.source_cidr, a.description, a.created_at
+    FROM team_agents a ORDER BY a.name
+  `).all();
+  const labelsFor = db.prepare(`
+    SELECT l.id, l.name FROM labels l
+    JOIN agent_labels al ON l.id = al.label_id
+    WHERE al.agent_id = ? ORDER BY l.name
+  `);
+  res.json(agents.map(a => ({
+    ...a,
+    account: agentAccount(a.name),
+    labels: labelsFor.all(a.id)
+  })));
+});
+
+// Labels the current user may grant to agents: the ones they hold via
+// their groups (all labels for admins).
+app.get('/api/me/labels', isAuthenticated, (req, res) => {
+  if (isAdminUser(req.user.id)) {
+    return res.json(db.prepare('SELECT * FROM labels ORDER BY name').all());
+  }
+  const labels = db.prepare(`
+    SELECT DISTINCT l.* FROM labels l
+    JOIN label_groups lg ON l.id = lg.label_id
+    JOIN user_groups ug ON lg.group_id = ug.group_id
+    WHERE ug.user_id = ? ORDER BY l.name
+  `).all(req.user.id);
+  res.json(labels);
+});
+
+app.post('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
+  if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, req.params.labelId)) {
+    return res.status(403).json({ error: 'You can only grant labels you have access to yourself.' });
+  }
+  const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(req.params.agentId);
+  const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(req.params.labelId);
+  if (!agent || !label) return res.status(404).json({ error: 'Agent or label not found' });
+  db.prepare('INSERT OR IGNORE INTO agent_labels (agent_id, label_id) VALUES (?, ?)').run(agent.id, label.id);
+  res.json({ success: true });
+});
+
+app.delete('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
+  if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, req.params.labelId)) {
+    return res.status(403).json({ error: 'You can only remove labels you have access to yourself.' });
+  }
+  db.prepare('DELETE FROM agent_labels WHERE agent_id = ? AND label_id = ?').run(req.params.agentId, req.params.labelId);
+  res.json({ success: true });
+});
+
+app.delete('/api/agents/:id', isAdmin, (req, res) => {
+  const result = db.prepare('DELETE FROM team_agents WHERE id = ?').run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'Agent not found' });
   res.json({ success: true });
 });
 
@@ -982,7 +1141,7 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
     (a.name || a.email).localeCompare(b.name || b.email, undefined, { sensitivity: 'base' })
   );
 
-  res.json({ users });
+  res.json({ users, agents: serverTeamAgents(req.params.serverId) });
 });
 
 // Download manual setup package for a server (for unreachable/air-gapped servers)
@@ -1153,7 +1312,8 @@ app.get('/api/deploy-data', (req, res) => {
               public_key: b.public_key,
               key_options: botKeyOptions(b.source_cidr)
             }))
-          }))
+          })),
+          agents: serverTeamAgents(server.id)
         };
       })
     };

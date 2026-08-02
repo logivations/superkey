@@ -52,3 +52,21 @@ docker-compose up -d
 - Groups are assigned to labels
 - Users get access to servers via their group memberships
 - Admins are members of the `superkey_admins` group
+
+## Agents
+
+Two kinds of automation identities, both deployed as separate, unprivileged
+Linux accounts (groups `superkey, adm, systemd-journal`; hardened
+`restrict,pty` keys, optional `from=` source restriction):
+
+- **Personal agents** ("My Agents" tab): owned by a user, log in as
+  `<user>_<name>`, and reach exactly the devices the owner can — access is
+  inherited and capped, revocable by the owner any time.
+- **Team agents** ("Team Agents" tab): shared nemo agents with no owner.
+  The nemo dispatcher registers them automatically via
+  `POST /api/agents/register` (machine auth: `AGENT_API_TOKEN` bearer
+  token); they start with **no access**. Signed-in users attach **labels**
+  to an agent — it can then reach the devices carrying those labels, as
+  `agent_<name>`. Users can only attach labels they hold themselves
+  (admins: any label). Deleting a team agent (admin) locks its accounts on
+  the next deploy.
