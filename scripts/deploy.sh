@@ -213,8 +213,8 @@ process_server() {
                 continue
             fi
 
-            USER_CALLS+=$(printf 'setup_bot %q %q %q %q || OVERALL_STATUS=1\n' \
-                "$BACCT" "$BNAME" "$BKEY" "$BOPTS")
+            USER_CALLS+=$(printf 'setup_bot %q %q %q %q %q || OVERALL_STATUS=1\n' \
+                "$BACCT" "$BNAME" "$BKEY" "$BOPTS" "")
             USER_CALLS+=$'\n'
         done < <(echo "$user" | jq -c '.bots[]?')
     done < <(echo "$server" | jq -c '.users[]')
@@ -238,8 +238,8 @@ process_server() {
             continue
         fi
 
-        USER_CALLS+=$(printf 'setup_bot %q %q %q %q || OVERALL_STATUS=1\n' \
-            "$AACCT" "$ANAME" "$AKEY" "$AOPTS")
+        USER_CALLS+=$(printf 'setup_bot %q %q %q %q %q || OVERALL_STATUS=1\n' \
+            "$AACCT" "$ANAME" "$AKEY" "$AOPTS" "docker")
         USER_CALLS+=$'\n'
     done < <(echo "$server" | jq -c '.agents[]?')
 
@@ -393,6 +393,7 @@ setup_bot() {
     local BOT_NAME="$2"
     local PUBLIC_KEY="$3"
     local KEY_OPTS="$4"
+    local EXTRA_GROUPS="$5"
 
     echo "    Setting up bot account: $ACCT"
 
@@ -409,11 +410,13 @@ setup_bot() {
 
     # Bots join the superkey marker group (managed + revocable by superkey,
     # access to the shared /data dir) plus adm/systemd-journal for READ-ONLY
-    # access to the full system journal. They are deliberately NOT in
-    # logi/docker, so they get no scoped sudo and no docker=root: a bot is
-    # meant to be less privileged than its human owner. adm/systemd-journal are
-    # standard system groups, joined only if they already exist on the host.
-    for g in superkey adm systemd-journal; do
+    # access to the full system journal. PERSONAL bots are deliberately NOT
+    # in logi/docker (no scoped sudo, no docker=root: less privileged than
+    # their owner). TEAM agents additionally get docker via EXTRA_GROUPS —
+    # their access is granted per label, on restricted servers only by
+    # allowed_users. adm/systemd-journal are standard system groups, joined
+    # only if they already exist on the host.
+    for g in superkey adm systemd-journal $EXTRA_GROUPS; do
         if ! getent group "$g" &>/dev/null; then
             continue
         fi

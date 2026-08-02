@@ -107,9 +107,11 @@ contradict it.
 
 ## Agents
 
-Two kinds of automation identities, both deployed as separate, unprivileged
-Linux accounts (groups `superkey, adm, systemd-journal`; hardened
-`restrict,pty` keys, optional `from=` source restriction):
+Two kinds of automation identities, both deployed as separate Linux
+accounts (hardened `restrict,pty` keys, optional `from=` source
+restriction). Personal bots get groups `superkey, adm, systemd-journal`
+(read-only logs, no docker/sudo — less privileged than their owner); team
+agents additionally join `docker`:
 
 - **Personal agents** ("My Agents" tab): owned by a user, log in as
   `<user>_<name>`, and reach exactly the devices the owner can — access is

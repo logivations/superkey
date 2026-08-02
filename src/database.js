@@ -82,7 +82,8 @@ db.exec(`
   -- nemo dispatcher through the machine API with no access at all.
   -- Access is granted per label (agent_labels), like groups get labels —
   -- an agent reaches exactly the servers carrying its labels, as the
-  -- unprivileged account agent_<name>.
+  -- account agent_<name> (groups superkey/adm/systemd-journal + docker;
+  -- personal bots get the same minus docker).
   CREATE TABLE IF NOT EXISTS team_agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
