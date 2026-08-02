@@ -15,7 +15,11 @@
 # with its hostname. Cap concurrency with MAX_JOBS (default 8), or force
 # sequential mode with --serial.
 #
-# Usage: ./scripts/deploy.sh [--dry-run] [--server hostname] [--serial] [--jobs N]
+# The deploy API requires DEPLOY_API_TOKEN (see .env on the superkey host).
+# SSH uses DEPLOY_SSH_KEY if set (the machine deploy key), otherwise
+# whatever your agent offers.
+#
+# Usage: ./scripts/deploy.sh [--dry-run] [--server hostname] [--stale] [--serial] [--jobs N]
 #
 
 SUPERKEY_URL="${SUPERKEY_URL:-http://localhost:3000}"
@@ -24,6 +28,17 @@ MAX_JOBS="${MAX_JOBS:-50}"
 DRY_RUN=false
 TARGET_SERVER=""
 SERIAL=false
+STALE_ONLY=false
+
+# Extra ssh options; use the machine deploy key when configured.
+SSH_EXTRA_OPTS=()
+if [ -n "$DEPLOY_SSH_KEY" ]; then
+    SSH_EXTRA_OPTS+=(-i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes)
+fi
+
+api_curl() {
+    curl -s ${DEPLOY_API_TOKEN:+-H "Authorization: Bearer $DEPLOY_API_TOKEN"} "$@"
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -40,13 +55,17 @@ while [[ $# -gt 0 ]]; do
             SERIAL=true
             shift
             ;;
+        --stale)
+            STALE_ONLY=true
+            shift
+            ;;
         --jobs)
             MAX_JOBS="$2"
             shift 2
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--dry-run] [--server hostname] [--serial] [--jobs N]"
+            echo "Usage: $0 [--dry-run] [--server hostname] [--stale] [--serial] [--jobs N]"
             exit 1
             ;;
     esac
@@ -70,11 +89,34 @@ echo ""
 
 # Get all servers with access configuration
 echo "Fetching server access data from Superkey..."
-SERVERS_DATA=$(curl -s "${SUPERKEY_URL}/api/deploy-data")
+SERVERS_DATA=$(api_curl "${SUPERKEY_URL}/api/deploy-data")
 
 if [ -z "$SERVERS_DATA" ] || [ "$SERVERS_DATA" = "null" ]; then
     echo "Error: Could not fetch data from Superkey API"
     exit 1
+fi
+if echo "$SERVERS_DATA" | jq -e '.error' &>/dev/null; then
+    echo "Error from Superkey API: $(echo "$SERVERS_DATA" | jq -r '.error')"
+    echo "(Is DEPLOY_API_TOKEN set and correct?)"
+    exit 1
+fi
+
+# In --stale mode only touch servers whose deployed keys hash differs from
+# what superkey would deploy now.
+STALE_LIST=""
+if [ "$STALE_ONLY" = true ]; then
+    STALE_JSON=$(api_curl "${SUPERKEY_URL}/api/stale-servers")
+    if ! echo "$STALE_JSON" | jq -e '.servers' &>/dev/null; then
+        echo "Error: Could not fetch stale servers: $STALE_JSON"
+        exit 1
+    fi
+    STALE_LIST=" $(echo "$STALE_JSON" | jq -r '.servers[]' | tr '\n' ' ') "
+    STALE_COUNT=$(echo "$STALE_JSON" | jq '.servers | length')
+    echo "Stale servers: ${STALE_COUNT}"
+    if [ "$STALE_COUNT" -eq 0 ]; then
+        echo "Nothing to deploy."
+        exit 0
+    fi
 fi
 
 # Process a single server. All output goes to stdout/stderr; the caller
@@ -90,11 +132,14 @@ process_server() {
     echo "Processing server: $HOSTNAME"
     [ -n "$DESCRIPTION" ] && echo "  Description: $DESCRIPTION"
 
-    # Check if any users or team agents are configured for this server
-    local USER_COUNT AGENT_COUNT
+    # Servers with nothing to deploy that were never deployed are simply not
+    # enrolled — skip them. A previously deployed server that is now empty
+    # still gets processed so the revoke pass locks remaining accounts.
+    local USER_COUNT AGENT_COUNT EVER_DEPLOYED
     USER_COUNT=$(echo "$server" | jq '.users | length')
     AGENT_COUNT=$(echo "$server" | jq '.agents // [] | length')
-    if [ "${USER_COUNT:-0}" -eq 0 ] && [ "${AGENT_COUNT:-0}" -eq 0 ]; then
+    EVER_DEPLOYED=$(echo "$server" | jq -r '.ever_deployed // false')
+    if [ "${USER_COUNT:-0}" -eq 0 ] && [ "${AGENT_COUNT:-0}" -eq 0 ] && [ "$EVER_DEPLOYED" != "true" ]; then
         echo "  No users or agents configured for this server, skipping..."
         return 0
     fi
@@ -116,7 +161,7 @@ process_server() {
     # Test SSH connection (use DEPLOY_USER)
     local SSH_TARGET="$DEPLOY_USER@$HOSTNAME"
     echo "  Testing SSH connection to $SSH_TARGET..."
-    if ! ssh -n -o ConnectTimeout=5 -o BatchMode=yes "$SSH_TARGET" "echo 'SSH OK'" 2>/dev/null; then
+    if ! ssh -n "${SSH_EXTRA_OPTS[@]}" -o ConnectTimeout=5 -o BatchMode=yes "$SSH_TARGET" "echo 'SSH OK'" 2>/dev/null; then
         echo "  ERROR: Cannot connect to $SSH_TARGET via SSH, skipping..."
         echo "  Run: ./scripts/setup-server.sh $HOSTNAME to configure"
         return 1
@@ -405,7 +450,7 @@ ${REMOTE_BODY}
 ${USER_CALLS}
 exit \$OVERALL_STATUS"
 
-        if ! ssh "$SSH_TARGET" "bash -s" <<< "$REMOTE_SCRIPT"; then
+        if ! ssh "${SSH_EXTRA_OPTS[@]}" -o BatchMode=yes "$SSH_TARGET" "bash -s" <<< "$REMOTE_SCRIPT"; then
             echo "  ERROR: Remote setup failed on $HOSTNAME"
             user_failed=1
         fi
@@ -420,7 +465,7 @@ exit \$OVERALL_STATUS"
         KEYS_HASH=$(echo "$server" | jq -r '.expected_keys_hash')
 
         echo "  Reporting deployment status to API (hash: $KEYS_HASH)..."
-        REPORT_RESULT=$(curl -s -X POST "${SUPERKEY_URL}/api/servers/${HOSTNAME}/deployed" \
+        REPORT_RESULT=$(api_curl -X POST "${SUPERKEY_URL}/api/servers/${HOSTNAME}/deployed" \
             -H "Content-Type: application/json" \
             -d "{\"keys_hash\": \"$KEYS_HASH\"}")
 
@@ -453,6 +498,11 @@ while read -r server; do
 
     # Skip if targeting a specific server and this isn't it
     if [ -n "$TARGET_SERVER" ] && [ "$HOSTNAME" != "$TARGET_SERVER" ]; then
+        continue
+    fi
+
+    # In --stale mode, skip servers that are already up to date
+    if [ "$STALE_ONLY" = true ] && ! echo "$STALE_LIST" | grep -q " $HOSTNAME "; then
         continue
     fi
 

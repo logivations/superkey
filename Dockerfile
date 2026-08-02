@@ -15,6 +15,10 @@ RUN npm install --production
 COPY src ./src
 COPY public ./public
 
+# Restricted-servers policy (committed to git on purpose: changing it is
+# traceable, unlike DB edits)
+COPY restricted-servers.json ./restricted-servers.json
+
 # Create data directory for SQLite database
 RUN mkdir -p /data
 

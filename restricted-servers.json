@@ -1,0 +1,4 @@
+{
+  "_doc": "Servers matching a rule here are RESTRICTED: only members of allowed_groups are deployed, regardless of label/group wiring in the UI. Changing this file requires a git commit, so widening access to a restricted server is always traceable. See src/restricted.js for the format.",
+  "restricted_servers": []
+}

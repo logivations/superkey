@@ -39,6 +39,16 @@ else
     log "Superkey update complete! Now running commit ${REMOTE_COMMIT:0:7}"
 fi
 
+# Keep the deploy runner installed and current (idempotent: generates the
+# machine deploy key, DEPLOY_API_TOKEN and systemd timers on first run,
+# no-ops afterwards).
+if [ "$(id -u)" -eq 0 ]; then
+    "$SCRIPT_DIR/setup-deploy-runner.sh" >> "$LOG_FILE" 2>&1 \
+        || log "WARNING: setup-deploy-runner.sh failed (see log)"
+else
+    log "Not root - skipping deploy runner setup"
+fi
+
 # Update hostnames repo
 if [ -d "$HOSTNAMES_DIR" ]; then
     cd "$HOSTNAMES_DIR"

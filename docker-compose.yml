@@ -5,6 +5,10 @@ services:
     build: .
     expose:
       - "3000"
+    # Host-local only: the deploy runner (systemd timer on this host) talks
+    # to the API without going through caddy.
+    ports:
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./data:/data
       - ./credentials.json:/app/credentials.json:ro
@@ -19,6 +23,10 @@ services:
       # Machine token for nemo team-agent auto-registration
       # (POST /api/agents/register). Empty = agent API disabled.
       - AGENT_API_TOKEN=${AGENT_API_TOKEN:-}
+      # Deploy runner auth + the machine public key served at /api/deploy-key.
+      # Both written into .env by scripts/setup-deploy-runner.sh.
+      - DEPLOY_API_TOKEN=${DEPLOY_API_TOKEN:-}
+      - DEPLOY_PUBKEY=${DEPLOY_PUBKEY:-}
       - NODE_ENV=production
     restart: unless-stopped
 

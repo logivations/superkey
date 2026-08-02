@@ -3,19 +3,21 @@
 # Superkey Server Setup Script
 #
 # Run this once on each server to set up the superkey-deploy user.
-# Fetches public keys from all superkey_admins group members and adds them
-# to the deploy user's authorized_keys.
+# Installs the superkey MACHINE deploy key (fetched from the Superkey API)
+# as the only authorized key of the deploy user — deploys then run
+# automatically from the superkey host. Admin personal keys are NOT
+# installed; admins reach servers through their own provisioned accounts.
 #
-# Usage: ./setup-server.sh <server-hostname> [--superkey-url URL]
+# Usage: ./setup-server.sh <server-hostname> [--superkey-url URL] [--ssh-user USER]
 #
 # Example:
 #   ./setup-server.sh muc-amr.cs
-#   ./setup-server.sh muc-amr.cs --superkey-url http://superkey.internal:3000
+#   ./setup-server.sh fleetbot --ssh-user root
 #
 
 set -e
 
-SUPERKEY_URL="${SUPERKEY_URL:-http://localhost:3000}"
+SUPERKEY_URL="${SUPERKEY_URL:-https://superkey.ops.logivations.com}"
 SERVER=""
 DEPLOY_USER="superkey-deploy"
 SSH_USER=""
@@ -33,7 +35,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -*)
             echo "Unknown option: $1"
-            echo "Usage: $0 <server-hostname> [--superkey-url URL]"
+            echo "Usage: $0 <server-hostname> [--superkey-url URL] [--ssh-user USER]"
             exit 1
             ;;
         *)
@@ -46,20 +48,19 @@ done
 if [ -z "$SERVER" ]; then
     echo "Superkey Server Setup Script"
     echo ""
-    echo "Usage: $0 <server-hostname> [--superkey-url URL]"
+    echo "Usage: $0 <server-hostname> [--superkey-url URL] [--ssh-user USER]"
     echo ""
-    echo "This script sets up the superkey-deploy user on a target server and adds"
-    echo "SSH public keys from all members of the superkey_admins group."
+    echo "Sets up the superkey-deploy user on a target server with the superkey"
+    echo "machine deploy key. After this, the superkey host deploys user access"
+    echo "to the server automatically."
     echo ""
     echo "Options:"
-    echo "  --superkey-url URL    Superkey API URL (default: \$SUPERKEY_URL or http://localhost:3000)"
+    echo "  --superkey-url URL    Superkey API URL (default: \$SUPERKEY_URL or https://superkey.ops.logivations.com)"
     echo "  --ssh-user USER       SSH as USER on the target (default: current user). Use 'root' for fresh servers."
     echo ""
     echo "Examples:"
     echo "  $0 muc-amr.cs"
-    echo "  $0 muc-amr.cs --superkey-url http://superkey.internal:3000"
     echo "  $0 fleetbot --ssh-user root"
-    echo "  SUPERKEY_URL=http://superkey:3000 $0 muc-amr.cs"
     exit 1
 fi
 
@@ -73,36 +74,27 @@ echo "Superkey:    $SUPERKEY_URL"
 echo "Deploy user: $DEPLOY_USER"
 echo ""
 
-# Fetch admin public keys from Superkey API
-echo "Fetching admin public keys from Superkey API..."
-ADMIN_DATA=$(curl -sfL "${SUPERKEY_URL}/api/admin-keys" 2>/dev/null) || {
-    echo "Error: Could not connect to Superkey API at ${SUPERKEY_URL}"
-    echo "Make sure Superkey is running and accessible."
+# Fetch the machine deploy public key from the Superkey API
+echo "Fetching machine deploy key from Superkey API..."
+KEY_DATA=$(curl -sfL "${SUPERKEY_URL}/api/deploy-key" 2>/dev/null) || {
+    echo "Error: Could not fetch the deploy key from ${SUPERKEY_URL}/api/deploy-key"
+    echo "Make sure Superkey is running and the deploy runner is set up"
+    echo "(scripts/setup-deploy-runner.sh on the superkey host)."
     exit 1
 }
 
-# Check for errors
-if echo "$ADMIN_DATA" | jq -e '.error' &>/dev/null; then
-    echo "Error: $(echo "$ADMIN_DATA" | jq -r '.error')"
+if echo "$KEY_DATA" | jq -e '.error' &>/dev/null; then
+    echo "Error: $(echo "$KEY_DATA" | jq -r '.error')"
     exit 1
 fi
 
-# Get users and their public keys
-KEY_COUNT=$(echo "$ADMIN_DATA" | jq '.users | length')
-
-if [ "$KEY_COUNT" -eq 0 ]; then
-    echo ""
-    echo "Error: No admin users have public keys configured"
-    echo "At least one superkey_admins member must have uploaded their SSH public key."
+KEYS_CONTENT=$(echo "$KEY_DATA" | jq -r '.public_key')
+if [ -z "$KEYS_CONTENT" ] || [ "$KEYS_CONTENT" = "null" ]; then
+    echo "Error: API returned no deploy key"
     exit 1
 fi
 
-echo "Found $KEY_COUNT admin(s) with public keys:"
-echo "$ADMIN_DATA" | jq -r '.users[] | "  - \(.email)"'
-
-# Collect all public keys
-PUBLIC_KEYS=$(echo "$ADMIN_DATA" | jq -r '.users[].public_key')
-
+echo "Deploy key: $(echo "$KEYS_CONTENT" | awk '{print $1, substr($2, 1, 20) "...", $3}')"
 echo ""
 
 # Prompt for sudo password (not needed when SSHing as root)
@@ -121,9 +113,6 @@ fi
 
 # Escape single quotes in password for safe embedding
 SUDO_PASS_ESCAPED=$(printf '%s' "$SUDO_PASS" | sed "s/'/'\\\\''/g")
-
-# Create a temporary file with all public keys (one per line, no empty lines)
-KEYS_CONTENT=$(echo "$PUBLIC_KEYS" | grep -v '^$' | sort -u)
 
 echo ""
 echo "Setting up $DEPLOY_USER on $SERVER..."
@@ -151,16 +140,13 @@ AUTH_KEYS="\$SSH_DIR/authorized_keys"
 echo "\$SUDO_PASS" | sudo -S mkdir -p "\$SSH_DIR" 2>&1 | grep -v "^\[sudo\]" || true
 echo "\$SUDO_PASS" | sudo -S chmod 700 "\$SSH_DIR" 2>&1 | grep -v "^\[sudo\]" || true
 
-# Write all admin public keys (replace existing to ensure clean state)
+# Write the machine deploy key (replace existing to ensure clean state)
 echo "\$SUDO_PASS" | sudo -S bash -c "cat > '\$AUTH_KEYS'" << 'KEYS_EOF'
 $KEYS_CONTENT
 KEYS_EOF
 
 echo "\$SUDO_PASS" | sudo -S chmod 600 "\$AUTH_KEYS" 2>&1 | grep -v "^\[sudo\]" || true
 echo "\$SUDO_PASS" | sudo -S chown -R "\$DEPLOY_USER:\$DEPLOY_USER" "\$SSH_DIR" 2>&1 | grep -v "^\[sudo\]" || true
-
-KEY_COUNT=\$(echo "\$SUDO_PASS" | sudo -S wc -l < "\$AUTH_KEYS" 2>/dev/null | tr -d ' ')
-echo "  Added \$KEY_COUNT key(s) to authorized_keys"
 
 echo "Configuring passwordless sudo..."
 SUDOERS_FILE="/etc/sudoers.d/\$DEPLOY_USER"
@@ -187,14 +173,6 @@ echo "Setup complete for \$DEPLOY_USER on \$(hostname)"
 REMOTE_EOF
 
 echo ""
-echo "Done! Testing connection as $DEPLOY_USER..."
-if ssh -o BatchMode=yes -o ConnectTimeout=5 "$DEPLOY_USER@$SERVER" "echo 'SSH OK' && sudo -n true && echo 'Sudo OK'" 2>/dev/null; then
-    echo ""
-    echo "SUCCESS: $SERVER is ready for deployment"
-    echo ""
-    echo "All superkey_admins members with public keys can now SSH as $DEPLOY_USER"
-else
-    echo ""
-    echo "WARNING: Could not verify $DEPLOY_USER access"
-    echo "Make sure your SSH key is in your agent: ssh-add ~/.ssh/id_rsa"
-fi
+echo "Done! The superkey host can now deploy to $SERVER."
+echo "Add the server in the Superkey UI (with labels) if it isn't there yet —"
+echo "the deploy runner picks it up automatically within a minute."

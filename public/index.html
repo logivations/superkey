@@ -734,9 +734,12 @@
           const deployedDate = new Date(s.last_deployed_at).toLocaleDateString();
           syncStatus = `<div class="sync-status"><span class="dot dot-yellow"></span> Needs sync (${deployedDate})</div>`;
         }
+        const restrictedBadge = s.restricted
+          ? ' <span class="tag" style="background:#7c2d12;color:#fff" title="Access limited by restricted-servers.json (change requires a git commit)">restricted</span>'
+          : '';
         return `
           <tr>
-            <td>${s.hostname}</td>
+            <td>${s.hostname}${restrictedBadge}</td>
             <td>${s.description || '-'}</td>
             <td>${s.labels.map(l => `<span class="tag">${l}</span>`).join('') || '<span style="color:#999">No labels</span>'}</td>
             <td>${syncStatus}</td>

@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const db = require('./database');
+const restricted = require('./restricted');
 
 // Derive the Linux username superkey provisions for an email
 // (matches deploy.sh: local-part, dots -> underscores).
@@ -75,58 +76,72 @@ function isValidSourceList(s) {
 
 const MAX_BOTS_PER_USER = 10;
 
-// Compute hash of users/keys for a server to detect if deployment is up-to-date
-function computeServerKeysHash(serverId) {
-  const users = db.prepare(`
-    SELECT DISTINCT u.email, u.public_key FROM users u
+// Users that will actually be DEPLOYED on a server. This is the single
+// source of truth shared by deploy-data, the keys hash, the access views
+// and the manual-setup download, so they can never disagree. For servers
+// matching restricted-servers.json, label wiring alone is not enough —
+// the user must also be in one of the policy's allowed groups.
+function serverAuthorizedUsers(server) {
+  const policy = restricted.policyFor(server.hostname);
+  if (!policy) {
+    return db.prepare(`
+      SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
+      JOIN user_groups ug ON u.id = ug.user_id
+      JOIN label_groups lg ON ug.group_id = lg.group_id
+      JOIN server_labels sl ON lg.label_id = sl.label_id
+      WHERE sl.server_id = ?
+      ORDER BY u.email
+    `).all(server.id);
+  }
+  if (policy.allowed_groups.length === 0) return [];
+  const placeholders = policy.allowed_groups.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
     JOIN user_groups ug ON u.id = ug.user_id
+    JOIN groups g ON g.id = ug.group_id
     JOIN label_groups lg ON ug.group_id = lg.group_id
     JOIN server_labels sl ON lg.label_id = sl.label_id
-    WHERE sl.server_id = ? AND u.public_key IS NOT NULL AND u.public_key != ''
+    WHERE sl.server_id = ? AND g.name IN (${placeholders})
     ORDER BY u.email
-  `).all(serverId);
-  // Bot keys are part of what gets deployed, so include them in the hash:
-  // adding/removing a bot should mark the server as needing a sync.
-  const bots = db.prepare(`
-    SELECT u.email, bk.name, bk.public_key, bk.source_cidr FROM bot_keys bk
-    JOIN users u ON u.id = bk.user_id
-    JOIN user_groups ug ON u.id = ug.user_id
-    JOIN label_groups lg ON ug.group_id = lg.group_id
-    JOIN server_labels sl ON lg.label_id = sl.label_id
-    WHERE sl.server_id = ?
-    ORDER BY u.email, bk.name
-  `).all(serverId);
-  // Team agents with access to this server via their labels.
-  const agents = db.prepare(`
-    SELECT DISTINCT a.name, a.public_key, a.source_cidr FROM team_agents a
-    JOIN agent_labels al ON a.id = al.agent_id
-    JOIN server_labels sl ON al.label_id = sl.label_id
-    WHERE sl.server_id = ?
-    ORDER BY a.name
-  `).all(serverId);
-  const data = [
-    ...users.map(u => `${u.email}:${u.public_key}`),
-    ...bots.map(b => `${b.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`),
-    ...agents.map(a => `agent/${a.name}:${a.public_key}:${a.source_cidr || ''}`)
-  ].join('\n');
-  return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+  `).all(server.id, ...policy.allowed_groups);
 }
 
 // Team agents to deploy on a server (shared with /api/deploy-data and the
-// admin access view).
-function serverTeamAgents(serverId) {
+// admin access view). Restricted servers get no team agents unless the
+// policy explicitly sets allow_agents.
+function serverTeamAgents(server) {
+  const policy = restricted.policyFor(server.hostname);
+  if (policy && !policy.allow_agents) return [];
   return db.prepare(`
     SELECT DISTINCT a.name, a.public_key, a.source_cidr FROM team_agents a
     JOIN agent_labels al ON a.id = al.agent_id
     JOIN server_labels sl ON al.label_id = sl.label_id
     WHERE sl.server_id = ?
     ORDER BY a.name
-  `).all(serverId).map(a => ({
+  `).all(server.id).map(a => ({
     name: a.name,
     account: agentAccount(a.name),
     public_key: a.public_key,
+    source_cidr: a.source_cidr,
     key_options: botKeyOptions(a.source_cidr)
   }));
+}
+
+// Compute hash of users/keys for a server to detect if deployment is
+// up-to-date. Built from the same filtered views deploy-data serves, so a
+// restricted server is "up to date" exactly when the FILTERED set is on it.
+function computeServerKeysHash(server) {
+  const users = serverAuthorizedUsers(server);
+  const botsStmt = db.prepare(
+    'SELECT name, public_key, source_cidr FROM bot_keys WHERE user_id = ? ORDER BY name'
+  );
+  const agents = serverTeamAgents(server);
+  const data = [
+    ...users.filter(u => u.public_key).map(u => `${u.email}:${u.public_key}`),
+    ...users.flatMap(u => botsStmt.all(u.id).map(b => `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`)),
+    ...agents.map(a => `agent/${a.name}:${a.public_key}:${a.source_cidr || ''}`)
+  ].join('\n');
+  return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
 }
 
 const app = express();
@@ -498,18 +513,28 @@ function userHasLabel(userId, labelId) {
   `).get(labelId, userId);
 }
 
-// Machine auth for the nemo dispatcher (agent auto-registration). A single
-// bearer token from the environment; no session, no user.
-function isAgentApi(req, res, next) {
-  const token = process.env.AGENT_API_TOKEN;
-  if (!token) return res.status(503).json({ error: 'Agent API not configured (AGENT_API_TOKEN unset)' });
-  const header = req.headers.authorization || '';
-  const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const a = Buffer.from(provided);
-  const b = Buffer.from(token);
-  if (a.length === b.length && crypto.timingSafeEqual(a, b)) return next();
-  res.status(401).json({ error: 'Bad agent API token' });
+// Machine auth: a single bearer token from the environment; no session,
+// no user. Used for the nemo dispatcher (AGENT_API_TOKEN) and the deploy
+// runner (DEPLOY_API_TOKEN).
+function bearerTokenAuth(envName) {
+  return (req, res, next) => {
+    const token = process.env[envName];
+    if (!token) return res.status(503).json({ error: `API not configured (${envName} unset)` });
+    const header = req.headers.authorization || '';
+    const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const a = Buffer.from(provided);
+    const b = Buffer.from(token);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return next();
+    res.status(401).json({ error: 'Bad API token' });
+  };
 }
+
+const isAgentApi = bearerTokenAuth('AGENT_API_TOKEN');
+
+// The deploy runner on the superkey host is the only legitimate caller of
+// the deploy endpoints; they enumerate every user, key and server, so they
+// are not public.
+const isDeployApi = bearerTokenAuth('DEPLOY_API_TOKEN');
 
 // Auth routes
 app.get('/auth/google', passport.authenticate('google', {
@@ -712,6 +737,13 @@ app.post('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => 
   const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(req.params.agentId);
   const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(req.params.labelId);
   if (!agent || !label) return res.status(404).json({ error: 'Agent or label not found' });
+  const noAgents = restrictedServersWithLabel(label.id).filter(x => !x.policy.allow_agents);
+  if (noAgents.length > 0) {
+    return res.status(403).json({
+      error: `Label is attached to restricted server(s) ${noAgents.map(x => x.server.hostname).join(', ')} ` +
+        `which do not allow team agents (allow_agents in restricted-servers.json).`
+    });
+  }
   db.prepare('INSERT OR IGNORE INTO agent_labels (agent_id, label_id) VALUES (?, ?)').run(agent.id, label.id);
   res.json({ success: true });
 });
@@ -878,13 +910,14 @@ app.get('/api/servers', isAuthenticated, (req, res) => {
     GROUP BY s.id
   `).all();
   res.json(servers.map(s => {
-    const expectedHash = computeServerKeysHash(s.id);
+    const expectedHash = computeServerKeysHash(s);
     const isUpToDate = s.deployed_keys_hash === expectedHash;
     return {
       ...s,
       labels: s.labels ? s.labels.split(',') : [],
       expected_keys_hash: expectedHash,
-      is_up_to_date: isUpToDate
+      is_up_to_date: isUpToDate,
+      restricted: !!restricted.policyFor(s.hostname)
     };
   }));
 });
@@ -959,7 +992,7 @@ app.delete('/api/servers/:serverId/labels/:labelId', isAdmin, (req, res) => {
 });
 
 // Report deployment status (called by deploy script)
-app.post('/api/servers/:hostname/deployed', (req, res) => {
+app.post('/api/servers/:hostname/deployed', isDeployApi, (req, res) => {
   const { keys_hash } = req.body;
   const { hostname } = req.params;
   try {
@@ -1044,9 +1077,33 @@ app.get('/api/groups/:groupId/users', isAuthenticated, (req, res) => {
   res.json(users);
 });
 
+// Restricted servers carrying this label. Used to refuse UI actions that
+// look like they grant access the deploy would silently filter out anyway.
+function restrictedServersWithLabel(labelId) {
+  return db.prepare(`
+    SELECT s.* FROM servers s
+    JOIN server_labels sl ON s.id = sl.server_id
+    WHERE sl.label_id = ?
+  `).all(labelId)
+    .map(s => ({ server: s, policy: restricted.policyFor(s.hostname) }))
+    .filter(x => x.policy);
+}
+
 // Label-Group access management
 app.post('/api/labels/:labelId/groups/:groupId', isAdmin, (req, res) => {
   try {
+    const group = db.prepare('SELECT name FROM groups WHERE id = ?').get(req.params.groupId);
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+    const blocked = restrictedServersWithLabel(req.params.labelId)
+      .filter(x => !x.policy.allowed_groups.includes(group.name));
+    if (blocked.length > 0) {
+      return res.status(403).json({
+        error: `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
+          `and group "${group.name}" is not in their allowed_groups. ` +
+          `Widening access to restricted servers requires a commit to restricted-servers.json ` +
+          `(or use a separate label for the unrestricted servers).`
+      });
+    }
     db.prepare('INSERT OR IGNORE INTO label_groups (label_id, group_id) VALUES (?, ?)').run(req.params.labelId, req.params.groupId);
     res.json({ success: true });
   } catch (err) {
@@ -1068,6 +1125,32 @@ app.get('/api/labels/:labelId/groups', isAuthenticated, (req, res) => {
   res.json(groups);
 });
 
+// Shared shaping for the "which servers can this user reach" views.
+// Restricted servers where the user's groups aren't in the policy's
+// allowed_groups are dropped: label wiring says yes, but they would never
+// be deployed there, so showing the server would be a lie.
+function serversVisibleToUser(servers, userId) {
+  const groupNames = db.prepare(`
+    SELECT g.name FROM groups g
+    JOIN user_groups ug ON g.id = ug.group_id
+    WHERE ug.user_id = ?
+  `).all(userId).map(r => r.name);
+  return servers
+    .filter(s => {
+      const policy = restricted.policyFor(s.hostname);
+      return !policy || policy.allowed_groups.some(g => groupNames.includes(g));
+    })
+    .map(s => {
+      const expectedHash = computeServerKeysHash(s);
+      return {
+        ...s,
+        expected_keys_hash: expectedHash,
+        is_up_to_date: s.deployed_keys_hash === expectedHash,
+        restricted: !!restricted.policyFor(s.hostname)
+      };
+    });
+}
+
 // Access views
 app.get('/api/my-servers', isAuthenticated, (req, res) => {
   const servers = db.prepare(`
@@ -1079,15 +1162,7 @@ app.get('/api/my-servers', isAuthenticated, (req, res) => {
     WHERE ug.user_id = ?
     ORDER BY s.hostname COLLATE NOCASE
   `).all(req.user.id);
-  res.json(servers.map(s => {
-    const expectedHash = computeServerKeysHash(s.id);
-    const isUpToDate = s.deployed_keys_hash === expectedHash;
-    return {
-      ...s,
-      expected_keys_hash: expectedHash,
-      is_up_to_date: isUpToDate
-    };
-  }));
+  res.json(serversVisibleToUser(servers, req.user.id));
 });
 
 app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
@@ -1100,19 +1175,15 @@ app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
     WHERE ug.user_id = ?
     ORDER BY s.hostname COLLATE NOCASE
   `).all(req.params.userId);
-  res.json(servers.map(s => {
-    const expectedHash = computeServerKeysHash(s.id);
-    const isUpToDate = s.deployed_keys_hash === expectedHash;
-    return {
-      ...s,
-      expected_keys_hash: expectedHash,
-      is_up_to_date: isUpToDate
-    };
-  }));
+  res.json(serversVisibleToUser(servers, req.params.userId));
 });
 
 app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
-  const rows = db.prepare(`
+  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(req.params.serverId);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  const policy = restricted.policyFor(server.hostname);
+
+  let rows = db.prepare(`
     SELECT DISTINCT u.id, u.email, u.name, u.public_key, g.name as group_name FROM users u
     JOIN user_groups ug ON u.id = ug.user_id
     JOIN groups g ON ug.group_id = g.id
@@ -1121,6 +1192,9 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
     WHERE sl.server_id = ?
     ORDER BY g.name COLLATE NOCASE
   `).all(req.params.serverId);
+  // On a restricted server only memberships in allowed groups grant access,
+  // so only those are shown.
+  if (policy) rows = rows.filter(r => policy.allowed_groups.includes(r.group_name));
 
   const byUser = new Map();
   for (const r of rows) {
@@ -1141,7 +1215,12 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
     (a.name || a.email).localeCompare(b.name || b.email, undefined, { sensitivity: 'base' })
   );
 
-  res.json({ users, agents: serverTeamAgents(req.params.serverId) });
+  res.json({
+    users,
+    agents: serverTeamAgents(server),
+    restricted: !!policy,
+    restricted_policy: policy
+  });
 });
 
 // Download manual setup package for a server (for unreachable/air-gapped servers)
@@ -1152,14 +1231,9 @@ app.get('/api/servers/:id/download-setup', isAdmin, (req, res) => {
       return res.status(404).json({ error: 'Server not found' });
     }
 
-    // Get all users with access to this server via group membership
-    const users = db.prepare(`
-      SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
-      JOIN user_groups ug ON u.id = ug.user_id
-      JOIN label_groups lg ON ug.group_id = lg.group_id
-      JOIN server_labels sl ON lg.label_id = sl.label_id
-      WHERE sl.server_id = ?
-    `).all(req.params.id);
+    // Same filtered view the automated deploy uses (restricted-servers
+    // policy applied), so the manual package can't hand out more.
+    const users = serverAuthorizedUsers(server);
 
     if (users.length === 0) {
       return res.status(400).json({ error: 'No users have access to this server. Assign groups to this server\'s labels first.' });
@@ -1254,54 +1328,33 @@ the authorized_keys file on the server.
   }
 });
 
-// Get admin public keys for setup script (no auth required)
-// Returns public keys of all users in superkey_admins group
-app.get('/api/admin-keys', (req, res) => {
-  try {
-    const adminGroup = db.prepare("SELECT id FROM groups WHERE name = 'superkey_admins'").get();
-    if (!adminGroup) {
-      return res.status(404).json({ error: 'superkey_admins group not found' });
-    }
-
-    const users = db.prepare(`
-      SELECT u.email, u.name, u.public_key FROM users u
-      JOIN user_groups ug ON u.id = ug.user_id
-      WHERE ug.group_id = ? AND u.public_key IS NOT NULL AND u.public_key != ''
-    `).all(adminGroup.id);
-
-    res.json({
-      group: 'superkey_admins',
-      users: users.map(u => ({
-        email: u.email,
-        name: u.name,
-        public_key: u.public_key
-      }))
+// The machine public key deploys run with. Served without auth (it is a
+// public key) so the admin enrolling a new server can fetch it via
+// setup-server.sh. Set by setup-deploy-runner.sh on the superkey host.
+app.get('/api/deploy-key', (req, res) => {
+  const key = (process.env.DEPLOY_PUBKEY || '').trim();
+  if (!key) {
+    return res.status(404).json({
+      error: 'Deploy key not configured (DEPLOY_PUBKEY unset). Run scripts/setup-deploy-runner.sh on the superkey host.'
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
+  res.json({ public_key: key });
 });
 
-// Deployment data - returns all servers with their authorized users
-// Used by the deploy.sh script to set up user access on remote servers
-app.get('/api/deploy-data', (req, res) => {
+// Deployment data - returns all servers with their authorized users.
+// Used by the deploy runner to set up user access on remote servers.
+app.get('/api/deploy-data', isDeployApi, (req, res) => {
   try {
     const servers = db.prepare('SELECT * FROM servers').all();
     const result = {
       servers: servers.map(server => {
-        // Get all users with access to this server via group membership
-        const users = db.prepare(`
-          SELECT DISTINCT u.id, u.email, u.name, u.public_key FROM users u
-          JOIN user_groups ug ON u.id = ug.user_id
-          JOIN label_groups lg ON ug.group_id = lg.group_id
-          JOIN server_labels sl ON lg.label_id = sl.label_id
-          WHERE sl.server_id = ?
-        `).all(server.id);
-
+        const users = serverAuthorizedUsers(server);
         return {
           hostname: server.hostname,
           description: server.description,
-          expected_keys_hash: computeServerKeysHash(server.id),
+          restricted: !!restricted.policyFor(server.hostname),
+          ever_deployed: !!server.last_deployed_at,
+          expected_keys_hash: computeServerKeysHash(server),
           users: users.map(u => ({
             email: u.email,
             name: u.name,
@@ -1313,11 +1366,33 @@ app.get('/api/deploy-data', (req, res) => {
               key_options: botKeyOptions(b.source_cidr)
             }))
           })),
-          agents: serverTeamAgents(server.id)
+          agents: serverTeamAgents(server)
         };
       })
     };
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Servers whose deployed keys don't match what superkey would deploy now.
+// The deploy runner polls this and only touches stale hosts.
+app.get('/api/stale-servers', isDeployApi, (req, res) => {
+  try {
+    const servers = db.prepare('SELECT * FROM servers').all();
+    const stale = servers
+      .filter(s => {
+        if (s.deployed_keys_hash === computeServerKeysHash(s)) return false;
+        // Never deployed and nothing to deploy: not an enrolled server,
+        // don't make the runner knock on its door forever.
+        if (!s.last_deployed_at
+            && serverAuthorizedUsers(s).length === 0
+            && serverTeamAgents(s).length === 0) return false;
+        return true;
+      })
+      .map(s => s.hostname);
+    res.json({ servers: stale });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
