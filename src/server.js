@@ -18,16 +18,27 @@ function emailToUsername(email) {
   return email.split('@')[0].replace(/\./g, '_');
 }
 
+// Linux caps usernames at 32 chars; useradd rejects longer ones outright,
+// which would wedge every deploy that includes the account. Over-long names
+// are shortened deterministically: keep the recognizable prefix, replace the
+// tail with a short hash of the full name so distinct names stay distinct.
+const LINUX_USERNAME_MAX = 32;
+function fitLinuxUsername(name) {
+  if (name.length <= LINUX_USERNAME_MAX) return name;
+  const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 4);
+  return `${name.slice(0, LINUX_USERNAME_MAX - 5)}_${hash}`;
+}
+
 // The dedicated, unprivileged Linux account a user's personal agent logs in as.
 function botAccount(email, botName) {
-  return `${emailToUsername(email)}_${botName}`;
+  return fitLinuxUsername(`${emailToUsername(email)}_${botName}`);
 }
 
 // The Linux account a TEAM agent logs in as. Team agents have no owning
 // user; the fixed prefix keeps them recognizable on a host and apart from
 // <user>_<bot> personal-agent accounts.
 function agentAccount(name) {
-  return `agent_${name}`;
+  return fitLinuxUsername(`agent_${name}`);
 }
 
 // authorized_keys option prefix for a bot key. Bots are non-interactive
