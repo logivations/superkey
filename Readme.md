@@ -124,3 +124,9 @@ agents additionally join `docker`:
   `agent_<name>`. Users can only attach labels they hold themselves
   (admins: any label). Deleting a team agent (admin) locks its accounts on
   the next deploy.
+
+Both kinds are subjects in the admin **Who can reach what** lens, alongside
+people, groups and labels: pick an agent to light up the devices it reaches.
+A team agent stays dark on restricted servers without `allow_agents` —
+exactly the hosts it is never deployed to. The per-device panel lists the
+agents that reach that device and why.

@@ -233,12 +233,23 @@
     .person { appearance: none; background: none; border: 0; padding: 0; cursor: pointer;
       text-align: left; font: inherit; width: 100%; }
     .person .nm { font-size: 12.5px; }
+    .person .nm.mono { font-family: var(--mono); font-size: 12px; }
+    .person:disabled { cursor: default; opacity: .75; }
+    .person:disabled:hover .nm { color: inherit; text-decoration: none; }
     .person .via { font-family: var(--mono); font-size: 10px; color: var(--ink-2); letter-spacing: .04em; }
     .person:hover .nm { color: var(--blueprint); text-decoration: underline; }
     .detail .actions { display: flex; gap: 7px; padding: 11px 13px; border-top: 1px solid var(--rule); flex-wrap: wrap; }
     .empty-detail, .nobody { padding: 18px 13px; color: var(--ink-2); font-size: 12.5px; }
 
     /* ---- key ---- */
+    /* The key is the first thing a new user needs and the last thing an
+       enrolled one cares about, so with a key on file the plan takes the
+       top of the column and the key material follows it. */
+    .col { display: flex; flex-direction: column; min-width: 0; }
+    .col.has-key #key-zone { order: 2; }
+    .card.help > summary { font-size: 12px; letter-spacing: .14em; font-weight: 700; color: var(--ink); }
+    .card.help > summary:hover { color: var(--blueprint); }
+    .card.help[open] > summary { margin-bottom: 14px; }
     .keybox { border: 1px solid var(--rule); border-left: 3px solid var(--asbuilt); padding: 12px 14px;
       font-family: var(--mono); font-size: 12.5px; background: var(--paper); word-break: break-all; }
     .keybox.empty { border-left-color: var(--revision); }
@@ -314,46 +325,54 @@
     <!-- ---------- MY ACCESS ---------- -->
     <section class="view" id="v-mine" role="tabpanel" aria-labelledby="t-mine">
       <div class="split">
-        <div>
-          <div class="card">
-            <h2>Your SSH key</h2>
-            <p class="lead">One key, uploaded once. Superkey installs it on every device you can reach and
-              removes it everywhere the moment your access changes.</p>
-            <div id="key-state"></div>
-            <details id="key-editor" style="margin-top:14px">
-              <summary id="key-editor-summary">Replace this key</summary>
-              <div style="margin-top:12px">
-                <textarea id="public-key" placeholder="ssh-ed25519 AAAA… you@laptop"
-                  aria-label="Your SSH public key"></textarea>
-                <div style="margin-top:10px"><button class="btn solid" id="save-key">Save key</button></div>
+        <!-- With a key on file the devices lead and #key-zone drops below them
+             (see .col.has-key); without one, the key comes first. -->
+        <div class="col" id="mine-col">
+          <div id="key-zone">
+            <div class="card">
+              <h2>Your SSH key</h2>
+              <p class="lead" id="key-lead">One key, uploaded once. Superkey installs it on every device you can reach and
+                removes it everywhere the moment your access changes.</p>
+              <div id="key-state"></div>
+              <details id="key-editor" style="margin-top:14px">
+                <summary id="key-editor-summary">Replace this key</summary>
+                <div style="margin-top:12px">
+                  <textarea id="public-key" placeholder="ssh-ed25519 AAAA… you@laptop"
+                    aria-label="Your SSH public key"></textarea>
+                  <div style="margin-top:10px"><button class="btn solid" id="save-key">Save key</button></div>
+                </div>
+              </details>
+              <div id="key-message" class="alert" hidden></div>
+            </div>
+
+            <details class="card help" id="key-help">
+              <summary>Finding or making a key</summary>
+              <div class="help-body">
+                <p class="lead">Your public key is usually at <code>~/.ssh/id_ed25519.pub</code>. Print it with:</p>
+                <pre class="cmd">cat ~/.ssh/id_ed25519.pub                                  <span style="color:#8FB4C7"># Linux, macOS</span>
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub           <span style="color:#8FB4C7"># Windows PowerShell</span></pre>
+                <p class="lead" style="margin-top:16px">No key yet? Generate one on the machine you'll connect from,
+                  accept the default location, and optionally set a passphrase.</p>
+                <pre class="cmd">ssh-keygen -t ed25519 -C "you@lvairo.com"</pre>
+                <div class="warnbox">
+                  Upload only the <b>public</b> half — the file ending in <code>.pub</code>.
+                  The private key never leaves your machine.
+                </div>
               </div>
             </details>
-            <div id="key-message" class="alert" hidden></div>
           </div>
 
-          <div class="card">
-            <h2>Finding or making a key</h2>
-            <p class="lead">Your public key is usually at <code>~/.ssh/id_ed25519.pub</code>. Print it with:</p>
-            <pre class="cmd">cat ~/.ssh/id_ed25519.pub                                  <span style="color:#8FB4C7"># Linux, macOS</span>
-Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub           <span style="color:#8FB4C7"># Windows PowerShell</span></pre>
-            <p class="lead" style="margin-top:16px">No key yet? Generate one on the machine you'll connect from,
-              accept the default location, and optionally set a passphrase.</p>
-            <pre class="cmd">ssh-keygen -t ed25519 -C "you@lvairo.com"</pre>
-            <div class="warnbox">
-              Upload only the <b>public</b> half — the file ending in <code>.pub</code>.
-              The private key never leaves your machine.
+          <div id="mine-plan">
+            <div class="planbar">
+              <span class="headline" id="mine-headline">Loading…</span>
+              <span class="dim" id="mine-sub"></span>
             </div>
+            <div id="mine-sites"></div>
+            <p class="muted" id="mine-empty" hidden>
+              No devices yet. Access comes from your Google Workspace groups — ask an admin to attach
+              a label your group can reach.
+            </p>
           </div>
-
-          <div class="planbar">
-            <span class="headline" id="mine-headline">Loading…</span>
-            <span class="dim" id="mine-sub"></span>
-          </div>
-          <div id="mine-sites"></div>
-          <p class="muted" id="mine-empty" hidden>
-            No devices yet. Access comes from your Google Workspace groups — ask an admin to attach
-            a label your group can reach.
-          </p>
         </div>
 
         <aside>
@@ -437,7 +456,7 @@ cat ~/.ssh/id_nemo.pub</pre>
     <section class="view" id="v-access" role="tabpanel" aria-labelledby="t-access" hidden>
       <div class="lens">
         <label class="cap" for="lens-select">Show what</label>
-        <select id="lens-select" aria-label="Choose a person, group or label"></select>
+        <select id="lens-select" aria-label="Choose a person, agent, group or label"></select>
         <span class="cap">can reach</span>
         <span class="spacer"></span>
         <input type="search" id="plan-filter" class="filter-input" placeholder="filter by hostname or site…"
@@ -831,6 +850,11 @@ async function fingerprint(key) {
 async function renderKeyState() {
   const key = me.public_key || '';
   const box = $('key-state');
+  // Enrolled users lead with their devices; the key and the how-to-make-one
+  // instructions move below the plan and collapse.
+  $('mine-col').classList.toggle('has-key', !!key);
+  $('key-lead').hidden = !!key;
+  $('key-help').open = !key;
   if (!key) {
     box.innerHTML = '<div class="keybox empty">No key on file — you cannot reach any device until you add one.</div>';
     $('key-editor').open = true;
@@ -907,13 +931,24 @@ const saveBot = guarded('bot-message', async () => {
   $('bot-key').value = '';
   flash('bot-message', `Agent "${name}" saved. It reaches your devices on the next deploy.`);
   loadBots();
+  refreshBotLens();
 });
+
+/* Personal agents are lens subjects, and the list of them lives in the admin
+   users payload — so adding or revoking one has to refresh that. */
+async function refreshBotLens() {
+  if (!me.isAdmin || !$('lens-select').options.length) return;
+  try { allUsers = await api('/api/users'); } catch (e) { return; }
+  buildLensOptions();
+  if ($('lens-select').value.startsWith('bot:')) applyLens($('lens-select').value);
+}
 
 const revokeBot = guarded('bot-message', async (id, name) => {
   if (!confirm(`Revoke agent "${name}"? Its access is removed on the next deploy.`)) return;
   await api('/api/me/bots/' + id, { method: 'DELETE' });
   flash('bot-message', `Agent "${name}" revoked.`);
   loadBots();
+  refreshBotLens();
 });
 
 /* ============ team agents ============ */
@@ -935,11 +970,19 @@ async function loadTeamAgents() {
         : '<span class="tg none">no access</span>'}</td>
       <td class="actions">
         <button class="btn" data-agent-labels="${a.id}">Labels</button>
-        ${me.isAdmin ? `<button class="btn danger" data-delete-agent="${a.id}"
+        ${me.isAdmin ? `<button class="btn quiet" data-lens-agent="agent:${a.id}">Show access</button>
+        <button class="btn danger" data-delete-agent="${a.id}"
           data-name="${esc(a.name)}">Delete</button>` : ''}
       </td>
     </tr>`).join('')
     : '<tr><td colspan="5" class="muted">No team agents registered yet.</td></tr>';
+
+  // Agents are lens subjects too, so a registration or a label change has to
+  // reach the dropdown — and the view, if it is showing that agent.
+  if (me.isAdmin && $('lens-select').options.length) {
+    buildLensOptions();
+    if ($('lens-select').value.startsWith('agent:')) applyLens($('lens-select').value);
+  }
 }
 
 function renderAgentModal(agentId) {
@@ -1002,13 +1045,26 @@ let currentLens = null;
 
 function buildLensOptions() {
   const opt = (v, t) => `<option value="${esc(v)}">${esc(t)}</option>`;
-  $('lens-select').innerHTML =
+  const sel = $('lens-select');
+  const keep = sel.value;
+  const bots = allUsers.flatMap(u => (u.bots || []).map(b => ({ ...b, owner: u })));
+  sel.innerHTML =
     opt('user:' + me.id, 'You — ' + (me.name || me.email)) +
     opt('all', 'Everyone — the whole fleet') +
     `<optgroup label="People">${allUsers.map(u =>
       opt('user:' + u.id, u.name || u.email)).join('')}</optgroup>` +
+    `<optgroup label="Team agents">${teamAgents.length
+      ? teamAgents.map(a => opt('agent:' + a.id, a.account)).join('')
+      : '<option disabled>none registered</option>'}</optgroup>` +
+    `<optgroup label="Personal agents">${bots.length
+      ? bots.map(b => opt('bot:' + b.owner.id + ':' + b.name,
+          `${b.account} — ${b.owner.name || b.owner.email}`)).join('')
+      : '<option disabled>none created</option>'}</optgroup>` +
     `<optgroup label="Groups">${allGroups.map(g => opt('group:' + g.name, g.name)).join('')}</optgroup>` +
     `<optgroup label="Labels">${allLabels.map(l => opt('label:' + l.name, l.name)).join('')}</optgroup>`;
+  // Rebuilding after a sync or a label change must not throw the admin back
+  // to the first lens.
+  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
 }
 
 /* Each lens answers a slightly different question, so each says so plainly. */
@@ -1033,6 +1089,33 @@ async function resolveLens(value) {
       kind: 'Person', name: user.name || user.email, meta: user.email,
       hosts: new Set(servers.map(s => s.hostname)),
       via: user.group_names || me.groups || [], viaLabel: 'Member of',
+    };
+  }
+  if (kind === 'agent') {
+    const agent = teamAgents.find(a => a.id === Number(key));
+    if (!agent) return resolveLens('all');
+    const servers = await api('/api/agent-servers/' + agent.id);
+    return {
+      kind: 'Team agent', name: agent.account,
+      meta: agent.description
+        || 'shared agent · reaches every device carrying one of its labels',
+      hosts: new Set(servers.map(s => s.hostname)),
+      via: agent.labels.map(l => l.name), viaLabel: 'Labels attached',
+    };
+  }
+  if (kind === 'bot') {
+    // 'bot:<ownerId>:<name>' — a personal agent has no wiring of its own; it
+    // inherits its owner's devices and is capped by them.
+    const cut = key.indexOf(':');
+    const owner = allUsers.find(u => u.id === Number(key.slice(0, cut)));
+    const bot = owner && (owner.bots || []).find(b => b.name === key.slice(cut + 1));
+    if (!bot) return resolveLens('all');
+    const servers = await api('/api/user-servers/' + owner.id);
+    return {
+      kind: 'Personal agent', name: bot.account,
+      meta: `owned by ${owner.name || owner.email} · inherits their access`,
+      hosts: new Set(servers.map(s => s.hostname)),
+      via: owner.group_names || [], viaLabel: "Owner's groups",
     };
   }
   if (kind === 'group') {
@@ -1098,6 +1181,40 @@ function filterPlan() {
   $('plan-empty').hidden = shown > 0 || !q;
 }
 
+/* The accounts on a device that are not a person: team agents that hold one
+   of its labels, plus every personal agent belonging to someone who can
+   reach it. Both are clickable — they switch the lens to that agent. */
+function agentsMarkup(access, server) {
+  const carried = new Set(server.labels || []);
+  const team = (access.agents || []).map(a => {
+    const known = teamAgents.find(t => t.name === a.name);
+    // Only the labels this device carries explain access to THIS device.
+    const via = known ? known.labels.filter(l => carried.has(l.name)).map(l => l.name) : [];
+    return {
+      account: a.account || 'agent_' + a.name,
+      via: 'team agent · via ' + (via.length ? via.join(', ') : 'label'),
+      lens: known ? 'agent:' + known.id : null,
+    };
+  });
+  const personal = (access.users || []).flatMap(u => (u.bots || []).map(b => ({
+    account: b.account,
+    via: 'personal agent of ' + (u.name || u.email),
+    lens: 'bot:' + u.id + ':' + b.name,
+  })));
+  const all = [...team, ...personal];
+  return `
+    <div class="reach-head">
+      <span class="n">${all.length}</span>
+      <span class="t">${all.length === 1 ? 'agent can reach it' : 'agents can reach it'}</span>
+    </div>
+    ${all.length ? `<ul class="people">${all.map(a => `
+      <li><button class="person"${a.lens ? ` data-lens-agent="${esc(a.lens)}"` : ' disabled'}>
+        <span class="nm mono">${esc(a.account)}</span><br>
+        <span class="via">${esc(a.via)}</span>
+      </button></li>`).join('')}</ul>`
+      : '<div class="nobody">No agent reaches this device.</div>'}`;
+}
+
 const selectDevice = guarded('import-status', async hostname => {
   const server = allServers.find(s => s.hostname === hostname);
   if (!server) return;
@@ -1127,8 +1244,6 @@ const selectDevice = guarded('import-status', async hostname => {
           : '<span class="tg none">none</span>'}</span></div>
       ${access.restricted ? `<div class="drow"><span class="k">Restricted</span>
         <span class="v">widening access needs a commit to restricted-servers.json</span></div>` : ''}
-      ${access.agents && access.agents.length ? `<div class="drow"><span class="k">Agents</span>
-        <span class="v">${access.agents.map(a => `<span class="tg">${esc(a.name || a)}</span>`).join('')}</span></div>` : ''}
     </div>
     <div class="reach-head">
       <span class="n">${access.users.length}</span>
@@ -1141,6 +1256,7 @@ const selectDevice = guarded('import-status', async hostname => {
         <span class="via">via ${esc(u.group_names.join(', '))}</span>
       </button></li>`).join('')}</ul>`
       : '<div class="nobody">Nobody. No label on this device grants access to a group.</div>'}
+    ${agentsMarkup(access, server)}
     <div class="actions">
       <button class="btn solid" data-device-labels="${server.id}">Edit labels</button>
       <button class="btn quiet" data-download="${server.id}">Download setup</button>
@@ -1379,8 +1495,8 @@ const loadAdmin = guarded('import-status', async () => {
   startAutoImport();
 });
 
-/* Devices are imported from the ssh-configs repo; the runner keeps the fleet
-   list current, so this only refreshes what the page is showing. */
+/* Devices are imported from the ssh-configs repo server-side on a timer;
+   the POST just forces an immediate import so the page shows fresh data. */
 let autoImportTimer = null;
 async function importOnce() {
   try {
@@ -1437,7 +1553,7 @@ $('plan-filter').addEventListener('input', () => {
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-host], [data-revoke-bot], [data-agent-labels], [data-delete-agent],' +
     '[data-agent-remove], [data-device-labels], [data-device-remove], [data-download], [data-grant],' +
-    '[data-delete-label], [data-grant-remove], [data-lens-user]');
+    '[data-delete-label], [data-grant-remove], [data-lens-user], [data-lens-agent]');
   if (!t) return;
   const d = t.dataset;
 
@@ -1452,13 +1568,19 @@ document.addEventListener('click', e => {
   if (d.grant) return void openGrantModal(Number(d.grant));
   if (d.deleteLabel) return void deleteLabel(d.deleteLabel, d.name);
   if (d.grantRemove) return void removeGrant(Number(d.label), Number(d.grantRemove));
-  if (d.lensUser) {
-    openModalIds().forEach(closeModal);
-    showTab($('t-access'));
-    $('lens-select').value = 'user:' + d.lensUser;
-    applyLens($('lens-select').value);
-  }
+  if (d.lensUser) return void showLens('user:' + d.lensUser);
+  if (d.lensAgent) return void showLens(d.lensAgent);
 });
+
+/* Jump to the access tab with a given subject in the lens. */
+function showLens(value) {
+  openModalIds().forEach(closeModal);
+  showTab($('t-access'));
+  const sel = $('lens-select');
+  if (![...sel.options].some(o => o.value === value)) return;
+  sel.value = value;
+  applyLens(value);
+}
 
 /* ============ boot ============ */
 async function init() {
@@ -1475,7 +1597,8 @@ async function init() {
   await renderKeyState();
   loadMyAccess();
   loadBots();
-  loadTeamAgents();
+  // Before loadAdmin: the lens lists team agents, so they have to be loaded.
+  await loadTeamAgents();
   if (me.isAdmin) await loadAdmin();
 
   let saved = null;

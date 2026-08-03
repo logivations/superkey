@@ -139,6 +139,15 @@ function serverTeamAgents(server) {
   }));
 }
 
+// Personal agents (bots) an admin view attributes to a user. The account
+// name is what actually appears on the host, so it is computed here rather
+// than reassembled in the browser.
+function userBots(user) {
+  return db.prepare('SELECT id, name FROM bot_keys WHERE user_id = ? ORDER BY name')
+    .all(user.id)
+    .map(b => ({ id: b.id, name: b.name, account: botAccount(user.email, b.name) }));
+}
+
 // Compute hash of users/keys for a server to detect if deployment is
 // up-to-date. Built from the same filtered views deploy-data serves, so a
 // restricted server is "up to date" exactly when the FILTERED set is on it.
@@ -804,7 +813,9 @@ app.get('/api/users', isAdmin, (req, res) => {
     if (!byUser.has(r.user_id)) byUser.set(r.user_id, []);
     byUser.get(r.user_id).push(r.name);
   }
-  res.json(users.map(u => ({ ...u, group_names: byUser.get(u.id) || [] })));
+  // Bots inline for the same reason: the access views show a user's personal
+  // agents next to the user, and they reach whatever the user reaches.
+  res.json(users.map(u => ({ ...u, group_names: byUser.get(u.id) || [], bots: userBots(u) })));
 });
 
 app.get('/api/users/:id', isAdmin, (req, res) => {
@@ -847,73 +858,74 @@ function parseSSHConfig(content, configName) {
   return servers;
 }
 
+// Sync the servers table with the hostnames repo (ssh-configs/*.config).
+// Runs on a timer at startup (the repo itself is pulled by auto-update.sh),
+// and on demand via POST /api/import-servers.
+function importServersFromConfigs() {
+  if (!fs.existsSync(SSH_CONFIGS_PATH)) {
+    throw new Error(`SSH configs directory not found: ${SSH_CONFIGS_PATH}`);
+  }
+
+  const configFiles = fs.readdirSync(SSH_CONFIGS_PATH).filter(f => f.endsWith('.config'));
+  let imported = 0;
+  let updated = 0;
+  const hostnamesInRepo = new Set();
+
+  for (const configFile of configFiles) {
+    const configName = configFile.replace('.config', '');
+    const content = fs.readFileSync(path.join(SSH_CONFIGS_PATH, configFile), 'utf8');
+    const servers = parseSSHConfig(content, configName);
+
+    for (const server of servers) {
+      hostnamesInRepo.add(server.hostname);
+
+      // Check if server already exists
+      const existing = db.prepare('SELECT id, description FROM servers WHERE hostname = ?').get(server.hostname);
+      if (existing) {
+        // Update description if it changed (e.g. IP address changed)
+        if (existing.description !== server.description) {
+          db.prepare('UPDATE servers SET description = ? WHERE id = ?').run(server.description, existing.id);
+          updated++;
+        }
+        continue;
+      }
+
+      // Create the server
+      const result = db.prepare('INSERT INTO servers (hostname, description) VALUES (?, ?)').run(server.hostname, server.description);
+      const serverId = result.lastInsertRowid;
+
+      // Create or get the label
+      let label = db.prepare('SELECT id FROM labels WHERE name = ?').get(server.label);
+      if (!label) {
+        const labelResult = db.prepare('INSERT INTO labels (name) VALUES (?)').run(server.label);
+        label = { id: labelResult.lastInsertRowid };
+      }
+
+      // Link server to label
+      db.prepare('INSERT OR IGNORE INTO server_labels (server_id, label_id) VALUES (?, ?)').run(serverId, label.id);
+      imported++;
+    }
+  }
+
+  // Remove servers that no longer exist in the hostnames repo
+  const allDbServers = db.prepare('SELECT id, hostname FROM servers').all();
+  let removed = 0;
+  for (const dbServer of allDbServers) {
+    if (!hostnamesInRepo.has(dbServer.hostname)) {
+      // Delete server_labels associations first
+      db.prepare('DELETE FROM server_labels WHERE server_id = ?').run(dbServer.id);
+      // Delete the server
+      db.prepare('DELETE FROM servers WHERE id = ?').run(dbServer.id);
+      removed++;
+    }
+  }
+
+  return { imported, updated, removed, configFiles: configFiles.length };
+}
+
 app.post('/api/import-servers', isAdmin, (req, res) => {
   try {
-    if (!fs.existsSync(SSH_CONFIGS_PATH)) {
-      return res.status(400).json({ error: `SSH configs directory not found: ${SSH_CONFIGS_PATH}` });
-    }
-
-    const configFiles = fs.readdirSync(SSH_CONFIGS_PATH).filter(f => f.endsWith('.config'));
-    let imported = 0;
-    let updated = 0;
-    const hostnamesInRepo = new Set();
-
-    for (const configFile of configFiles) {
-      const configName = configFile.replace('.config', '');
-      const content = fs.readFileSync(path.join(SSH_CONFIGS_PATH, configFile), 'utf8');
-      const servers = parseSSHConfig(content, configName);
-
-      for (const server of servers) {
-        hostnamesInRepo.add(server.hostname);
-
-        // Check if server already exists
-        const existing = db.prepare('SELECT id, description FROM servers WHERE hostname = ?').get(server.hostname);
-        if (existing) {
-          // Update description if it changed (e.g. IP address changed)
-          if (existing.description !== server.description) {
-            db.prepare('UPDATE servers SET description = ? WHERE id = ?').run(server.description, existing.id);
-            updated++;
-          }
-          continue;
-        }
-
-        // Create the server
-        const result = db.prepare('INSERT INTO servers (hostname, description) VALUES (?, ?)').run(server.hostname, server.description);
-        const serverId = result.lastInsertRowid;
-
-        // Create or get the label
-        let label = db.prepare('SELECT id FROM labels WHERE name = ?').get(server.label);
-        if (!label) {
-          const labelResult = db.prepare('INSERT INTO labels (name) VALUES (?)').run(server.label);
-          label = { id: labelResult.lastInsertRowid };
-        }
-
-        // Link server to label
-        db.prepare('INSERT OR IGNORE INTO server_labels (server_id, label_id) VALUES (?, ?)').run(serverId, label.id);
-        imported++;
-      }
-    }
-
-    // Remove servers that no longer exist in the hostnames repo
-    const allDbServers = db.prepare('SELECT id, hostname FROM servers').all();
-    let removed = 0;
-    for (const dbServer of allDbServers) {
-      if (!hostnamesInRepo.has(dbServer.hostname)) {
-        // Delete server_labels associations first
-        db.prepare('DELETE FROM server_labels WHERE server_id = ?').run(dbServer.id);
-        // Delete the server
-        db.prepare('DELETE FROM servers WHERE id = ?').run(dbServer.id);
-        removed++;
-      }
-    }
-
-    res.json({
-      success: true,
-      imported,
-      updated,
-      removed,
-      configFiles: configFiles.length
-    });
+    res.json({ success: true, ...importServersFromConfigs() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1206,15 +1218,18 @@ function serversVisibleToUser(servers, userId) {
   }
   kept.sort((a, b) => a.hostname.localeCompare(b.hostname, undefined, { sensitivity: 'base' }));
 
-  return kept.map(s => {
-    const expectedHash = computeServerKeysHash(s);
-    return {
-      ...s,
-      expected_keys_hash: expectedHash,
-      is_up_to_date: s.deployed_keys_hash === expectedHash,
-      restricted: !!restricted.policyFor(s.hostname)
-    };
-  });
+  return kept.map(withDeployState);
+}
+
+// The extra fields every access view adds on top of a raw server row.
+function withDeployState(s) {
+  const expectedHash = computeServerKeysHash(s);
+  return {
+    ...s,
+    expected_keys_hash: expectedHash,
+    is_up_to_date: s.deployed_keys_hash === expectedHash,
+    restricted: !!restricted.policyFor(s.hostname)
+  };
 }
 
 // Access views
@@ -1242,6 +1257,27 @@ app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
     ORDER BY s.hostname COLLATE NOCASE
   `).all(req.params.userId);
   res.json(serversVisibleToUser(servers, req.params.userId));
+});
+
+// Devices a TEAM agent reaches: those carrying one of its labels, minus
+// restricted servers whose policy withholds agents — the same filter
+// serverTeamAgents applies at deploy time, so the view cannot promise more
+// than the deploy delivers. A personal agent has no view of its own: it
+// reaches exactly its owner's devices (/api/user-servers/:userId).
+app.get('/api/agent-servers/:id', isAdmin, (req, res) => {
+  const agent = db.prepare('SELECT id, name FROM team_agents WHERE id = ?').get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+  const servers = db.prepare(`
+    SELECT DISTINCT s.* FROM servers s
+    JOIN server_labels sl ON s.id = sl.server_id
+    JOIN agent_labels al ON al.label_id = sl.label_id
+    WHERE al.agent_id = ?
+    ORDER BY s.hostname COLLATE NOCASE
+  `).all(agent.id).filter(s => {
+    const policy = restricted.policyFor(s.hostname);
+    return !policy || policy.allow_agents;
+  });
+  res.json(servers.map(withDeployState));
 });
 
 app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
@@ -1280,7 +1316,10 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
         email: r.email,
         name: r.name,
         public_key: r.public_key,
-        group_names: [r.group_name]
+        group_names: [r.group_name],
+        // A personal agent lands on every device its owner reaches, so
+        // whoever is listed here brings their bots with them.
+        bots: userBots(r)
       });
     }
   }
@@ -1477,9 +1516,28 @@ app.get('*', (req, res) => {
 });
 
 const GROUP_SYNC_INTERVAL_MS = parseInt(process.env.GROUP_SYNC_INTERVAL_MS, 10) || 60 * 60 * 1000;
+const SERVER_IMPORT_INTERVAL_MS = parseInt(process.env.SERVER_IMPORT_INTERVAL_MS, 10) || 5 * 60 * 1000;
+
+// Keep the servers table in sync with the hostnames repo without anyone
+// having to open the admin UI: a pushed hostname is enrolled and (if its
+// label already maps to groups) deployed by the runner within minutes.
+function scheduledServerImport() {
+  try {
+    const r = importServersFromConfigs();
+    if (r.imported || r.updated || r.removed) {
+      console.log(`Server import: ${r.imported} added, ${r.updated} updated, ${r.removed} removed (${r.configFiles} config files)`);
+    }
+  } catch (err) {
+    console.error('Server import failed:', err.message);
+  }
+}
 
 app.listen(PORT, async () => {
   console.log(`Superkey server running on port ${PORT}`);
+
+  scheduledServerImport();
+  setInterval(scheduledServerImport, SERVER_IMPORT_INTERVAL_MS);
+  console.log(`Scheduled hostnames-repo server import every ${Math.round(SERVER_IMPORT_INTERVAL_MS / 60000)} min`);
   if (serviceAccountAuth) {
     console.log('Google Workspace group sync enabled via service account');
 
