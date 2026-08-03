@@ -399,8 +399,9 @@ Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub           <span style="color:#8
       <div class="card">
         <h2>My agents</h2>
         <p class="lead">A personal agent (your <strong>nemo</strong>, for instance) runs as you. It gets its own
-          key and logs in as a dedicated unprivileged account, <code>&lt;you&gt;_&lt;agent&gt;</code>, on exactly the
-          devices you can already reach. It can never have more access than you do, and you can revoke it at
+          key and logs in as a dedicated unprivileged account, <code>&lt;you&gt;_&lt;agent&gt;</code> (shortened
+          to Linux's 32-char limit if needed — the exact name is in the <strong>Logs in as</strong> column), on
+          exactly the devices you can already reach. It can never have more access than you do, and you can revoke it at
           any time. Shared agents live in the Team agents tab.</p>
         <table class="data">
           <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th></th></tr></thead>
@@ -927,9 +928,9 @@ const saveBot = guarded('bot-message', async () => {
   const name = $('bot-name').value.trim();
   const publicKey = $('bot-key').value.trim();
   const sourceCidr = $('bot-source').value.trim();
-  await api('/api/me/bots', { method: 'POST', body: JSON.stringify({ name, publicKey, sourceCidr }) });
+  const bot = await api('/api/me/bots', { method: 'POST', body: JSON.stringify({ name, publicKey, sourceCidr }) });
   $('bot-key').value = '';
-  flash('bot-message', `Agent "${name}" saved. It reaches your devices on the next deploy.`);
+  flash('bot-message', `Agent "${name}" saved — it logs in as "${bot.account}". It reaches your devices on the next deploy.`);
   loadBots();
   refreshBotLens();
 });
