@@ -295,6 +295,14 @@ passwordless sudo** for host troubleshooting (`systemctl`, `journalctl`,
 file is validated with `visudo` before install. Managed accounts have a locked
 password and no general sudo, so this is the only sudo they get.
 
+For **team agents** it additionally installs `/etc/sudoers.d/superkey-agents`
+(`%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, also `visudo`-validated)
+and puts agent accounts in `superkey_agents`. See the group table below for why;
+in short, the deploy tooling is only correct when run as the deploy user, agents
+already have `docker`, and going through `sudo -u` makes every action auditable
+(`journalctl _COMM=sudo`). Hosts without a `logi`/`administrator`/`ubuntu`
+account skip the rule with a message.
+
 ### System Groups on Servers
 
 | Group      | Purpose                                                                   |
@@ -302,6 +310,7 @@ password and no general sudo, so this is the only sudo they get.
 | `superkey` | Marker group. All Superkey-managed users are in this group. Used to identify which accounts can be safely managed (revoked) by Superkey without affecting other system users. |
 | `logi`     | Access group. Used for shared permissions like access to certain directories and sudo rules. The deploy script installs `/etc/sudoers.d/logi` granting this group scoped NOPASSWD sudo (`systemctl`, `journalctl`, `dmesg`, `reboot`, `shutdown`). Configure additional server permissions based on membership in this group. |
 | `adm` / `systemd-journal` | Standard system groups. Managed users are added to these (when present) so they can read full system/kernel logs via `journalctl`. |
+| `superkey_agents` | **Team agents only.** Carries `/etc/sudoers.d/superkey-agents`: `%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, where the deploy user is the first of `logi`/`administrator`/`ubuntu` that exists and owns a `~/deploy` checkout. It lets an agent drive the deploy tooling (`checkout_release_deepcv`, `checkout_master`, `update_w2mo`, `run_docker.sh`) as that user — which is the only way those scripts are correct, since `run_docker.sh` mounts the invoking user's home into the container. It does **not** grant the deploy user's own password-gated sudo. Team agents already hold `docker` (root-equivalent), so this is no new privilege tier; it is the supported path plus a sudo audit trail. Personal bots are never in this group. |
 
 ---
 

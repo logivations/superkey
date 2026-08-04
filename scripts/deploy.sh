@@ -9,6 +9,9 @@
 # - Provisions per-user bot accounts (<user>_<bot>): a separate, unprivileged
 #   account (superkey + adm/systemd-journal for read-only logs, no logi/docker)
 #   with a hardened bot key
+# - Provisions team-agent accounts (agent_<name>): the same hardened account
+#   plus the docker and superkey_agents groups — the latter carries a NOPASSWD
+#   run-as rule for the host's deploy user (/etc/sudoers.d/superkey-agents)
 # - Revokes access for users no longer authorized (removes from superkey group members)
 #
 # Servers are processed in parallel. Output from each server is prefixed
@@ -239,7 +242,7 @@ process_server() {
         fi
 
         USER_CALLS+=$(printf 'setup_bot %q %q %q %q %q || OVERALL_STATUS=1\n' \
-            "$AACCT" "$ANAME" "$AKEY" "$AOPTS" "docker")
+            "$AACCT" "$ANAME" "$AKEY" "$AOPTS" "docker superkey_agents")
         USER_CALLS+=$'\n'
     done < <(echo "$server" | jq -c '.agents[]?')
 
@@ -256,7 +259,7 @@ if ! sudo -n true 2>/dev/null; then
 fi
 
 # Ensure required groups exist
-for g in superkey logi docker; do
+for g in superkey logi docker superkey_agents; do
     if ! getent group "$g" &>/dev/null; then
         sudo -n groupadd "$g" 2>/dev/null || true
     fi
@@ -309,13 +312,60 @@ if [ -n "$LOGI_SUDO_CMDS" ]; then
     fi
 fi
 
+# Let TEAM agents run commands as the host's deploy account (the user that owns
+# the ~/deploy checkout). Rationale: the deploy tooling is only correct when run
+# as that user -- run_docker.sh mounts the INVOKING user's home into the
+# container (deploy#345), so an agent starting deep_cv under its own account
+# silently drops the ssh config mount on AMRs. Team agents already hold the
+# docker group, which is root-equivalent, so this adds no privilege tier: it
+# replaces hand-rolled docker calls with the supported path and puts every
+# action in sudo's log. It does NOT grant the deploy user's own
+# password-gated sudo. PERSONAL bots are deliberately excluded (they get
+# neither docker nor this group) so they stay less privileged than their owner.
+AGENT_RUNAS=""
+AGENT_RUNAS_FALLBACK=""
+for u in logi administrator ubuntu; do
+    if id "$u" &>/dev/null; then
+        U_HOME=$(getent passwd "$u" | cut -d: -f6)
+        if [ -n "$U_HOME" ] && [ -d "$U_HOME/deploy" ]; then
+            AGENT_RUNAS="$u"
+            break
+        fi
+        # Remember the first existing candidate as a fallback when no host has
+        # a deploy checkout (fresh machine, or a repo in a non-default place).
+        [ -z "$AGENT_RUNAS_FALLBACK" ] && AGENT_RUNAS_FALLBACK="$u"
+    fi
+done
+: "${AGENT_RUNAS:=$AGENT_RUNAS_FALLBACK}"
+
+AGENT_SUDOERS="/etc/sudoers.d/superkey-agents"
+if [ -n "$AGENT_RUNAS" ]; then
+    AGENT_SUDOERS_LINE="%superkey_agents ALL=($AGENT_RUNAS) NOPASSWD: ALL"
+    if [ "$(sudo -n cat "$AGENT_SUDOERS" 2>/dev/null)" != "$AGENT_SUDOERS_LINE" ]; then
+        echo "  Configuring run-as-$AGENT_RUNAS sudo for superkey_agents group..."
+        AGENT_TMP=$(mktemp)
+        printf '%s\n' "$AGENT_SUDOERS_LINE" > "$AGENT_TMP"
+        if sudo -n visudo -cf "$AGENT_TMP" >/dev/null 2>&1; then
+            sudo -n cp "$AGENT_TMP" "$AGENT_SUDOERS"
+            sudo -n chmod 440 "$AGENT_SUDOERS"
+            echo "    Installed: $AGENT_SUDOERS_LINE"
+        else
+            echo "    ERROR: agent sudoers failed visudo validation, not installing"
+        fi
+        rm -f "$AGENT_TMP"
+    fi
+else
+    echo "  No deploy account (logi/administrator/ubuntu) on this host;"
+    echo "  skipping the superkey_agents run-as sudoers rule."
+fi
+
 # Revoke users currently in superkey group but no longer authorized
 if getent group superkey &>/dev/null; then
     SUPERKEY_MEMBERS=$(getent group superkey | cut -d: -f4 | tr ',' ' ')
     for MEMBER in $SUPERKEY_MEMBERS; do
         if ! echo " $AUTHORIZED_USERS " | grep -q " $MEMBER "; then
             echo "    Revoking access for $MEMBER..."
-            for g in superkey logi docker adm systemd-journal; do
+            for g in superkey logi docker superkey_agents adm systemd-journal; do
                 sudo -n gpasswd -d "$MEMBER" "$g" 2>/dev/null || true
             done
             REV_HOME=$(getent passwd "$MEMBER" | cut -d: -f6)
@@ -412,10 +462,13 @@ setup_bot() {
     # access to the shared /data dir) plus adm/systemd-journal for READ-ONLY
     # access to the full system journal. PERSONAL bots are deliberately NOT
     # in logi/docker (no scoped sudo, no docker=root: less privileged than
-    # their owner). TEAM agents additionally get docker via EXTRA_GROUPS —
-    # their access is granted per label, on restricted servers only by
-    # allowed_users. adm/systemd-journal are standard system groups, joined
-    # only if they already exist on the host.
+    # their owner). TEAM agents additionally get docker and superkey_agents
+    # via EXTRA_GROUPS — the latter carries the run-as-deploy-user sudoers rule
+    # installed above, so they can drive the deploy tooling (checkout_*,
+    # update_w2mo, run_docker.sh) the way a human would instead of hand-rolling
+    # docker commands. Their access is granted per label, on restricted servers
+    # only by allowed_users. adm/systemd-journal are standard system groups,
+    # joined only if they already exist on the host.
     for g in superkey adm systemd-journal $EXTRA_GROUPS; do
         if ! getent group "$g" &>/dev/null; then
             continue
