@@ -730,6 +730,19 @@ app.post('/api/agents/register', isAgentApi, (req, res) => {
   res.json({ ...agent, account: agentAccount(agent.name) });
 });
 
+// Machine deregistration: the counterpart to /register, called by the nemo
+// dispatcher when an agent is deleted. Labels cascade away with the row;
+// the login account disappears from servers on the next deploy.
+app.delete('/api/agents/register/:name', isAgentApi, (req, res) => {
+  const name = sanitizeBotName(req.params.name);
+  if (!name) {
+    return res.status(400).json({ error: 'Invalid agent name (use 1-20 chars: a-z, 0-9, _, starting with a letter).' });
+  }
+  const result = db.prepare('DELETE FROM team_agents WHERE name = ?').run(name);
+  if (result.changes === 0) return res.status(404).json({ error: 'Agent not found' });
+  res.json({ success: true });
+});
+
 app.get('/api/agents', isAuthenticated, (req, res) => {
   const agents = db.prepare(`
     SELECT a.id, a.name, a.public_key, a.source_cidr, a.description, a.created_at

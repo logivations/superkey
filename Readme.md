@@ -122,8 +122,9 @@ agents additionally join `docker`:
   token); they start with **no access**. Signed-in users attach **labels**
   to an agent — it can then reach the devices carrying those labels, as
   `agent_<name>`. Users can only attach labels they hold themselves
-  (admins: any label). Deleting a team agent (admin) locks its accounts on
-  the next deploy.
+  (admins: any label). Deleting a team agent (admin in the UI, or the
+  dispatcher via `DELETE /api/agents/register/<name>` when the nemo agent
+  is deleted) locks its accounts on the next deploy.
 
 Both kinds are subjects in the admin **Who can reach what** lens, alongside
 people, groups and labels: pick an agent to light up the devices it reaches.
