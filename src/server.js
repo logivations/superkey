@@ -262,12 +262,16 @@ async function syncAllUsersGroups() {
       }
       pageToken = response.data.nextPageToken;
     } catch (err) {
-      console.error('Error fetching users:', err.message);
-      break;
+      // Abort instead of continuing with a partial/empty list: the removal step below
+      // would otherwise wipe every local user (and their public keys), as happened on 2026-09-14.
+      throw new Error(`Error fetching users from Google Workspace, sync aborted: ${err.message}`);
     }
   } while (pageToken);
 
   console.log(`Found ${allGoogleUsers.length} users in Google Workspace`);
+  if (allGoogleUsers.length === 0) {
+    throw new Error('Google Workspace returned 0 users, sync aborted to avoid wiping local users');
+  }
 
   // Get active users from Google
   const activeGoogleUsers = allGoogleUsers.filter(u => !u.suspended);
@@ -315,12 +319,14 @@ async function syncAllUsersGroups() {
       }
       pageToken = response.data.nextPageToken;
     } catch (err) {
-      console.error('Error fetching groups:', err.message);
-      break;
+      throw new Error(`Error fetching groups from Google Workspace, sync aborted: ${err.message}`);
     }
   } while (pageToken);
 
   console.log(`Found ${allGoogleGroups.length} groups in Google Workspace`);
+  if (allGoogleGroups.length === 0) {
+    throw new Error('Google Workspace returned 0 groups, sync aborted to avoid wiping local groups');
+  }
 
   // Get Google group emails
   const googleGroupEmails = new Set(allGoogleGroups.map(g => g.email));
@@ -500,9 +506,10 @@ passport.serializeUser((user, done) => {
 
 passport.deserializeUser((data, done) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(data.id);
-  if (user) {
-    user.accessToken = data.accessToken;
-  }
+  // `false` tells Passport the session is stale (user row gone) and logs the request out
+  // cleanly; `undefined` would make Passport throw "Failed to deserialize user" -> HTTP 500.
+  if (!user) return done(null, false);
+  user.accessToken = data.accessToken;
   done(null, user);
 });
 
@@ -1555,6 +1562,14 @@ function scheduledServerImport() {
     console.error('Server import failed:', err.message);
   }
 }
+
+// Global error handler: JSON instead of Express's default HTML 500 page
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+});
 
 app.listen(PORT, async () => {
   console.log(`Superkey server running on port ${PORT}`);
