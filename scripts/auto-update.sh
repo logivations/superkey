@@ -49,6 +49,12 @@ else
     log "Not root - skipping deploy runner setup"
 fi
 
+# Keep the daily DB backup cron installed (idempotent).
+if [ "$(id -u)" -eq 0 ]; then
+    "$SCRIPT_DIR/backup-db.sh" --install >> "$LOG_FILE" 2>&1 \
+        || log "WARNING: backup-db.sh --install failed (see log)"
+fi
+
 # Update hostnames repo
 if [ -d "$HOSTNAMES_DIR" ]; then
     cd "$HOSTNAMES_DIR"
