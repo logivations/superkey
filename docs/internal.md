@@ -307,10 +307,15 @@ repo's, in `/etc/sudoers.d/deploy-<user>`, provisioned by
 rule as `%logi …` into `/etc/sudoers.d/logi`, the deploy repo's file, which
 replaced the deploy rule and silently broke every unattended update on such
 hosts ([RTDTK-967](https://lvserv01.logivations.com/browse/RTDTK-967)).
-The deploy script removes that legacy file only when it is exactly what
-superkey wrote **and** the deploy account no longer depends on it (its own rule
-is back); otherwise it warns on every run until someone runs
-`sudo bash ~logi/deploy/linux/utilities/ensure_deploy_sudoers.sh` on the host.
+The deploy script removes that legacy file when it holds a single line superkey
+wrote (`%logi ALL=(ALL) NOPASSWD: …`) and, on every run, prints a note when the
+host's deploy account has no passwordless sudo of its own, naming the deploy
+repo's command to provision it:
+`sudo bash ~logi/deploy/linux/utilities/ensure_deploy_sudoers.sh logi`.
+
+`/data` is `3775` (setgid, group-writable, sticky): managed accounts may add
+entries but not rename or unlink what they do not own, because the deploy
+tooling runs `/data/monitoring` as root.
 
 For **team agents** it additionally installs `/etc/sudoers.d/superkey-agents`
 (`%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, also `visudo`-validated)

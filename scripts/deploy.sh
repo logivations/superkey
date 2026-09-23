@@ -260,6 +260,9 @@ if ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 
+# Set once, first: every failed step below turns it into the host's exit status.
+OVERALL_STATUS=0
+
 # Ensure required groups exist
 for g in superkey logi docker superkey_agents superkey_ops; do
     if ! getent group "$g" &>/dev/null; then
@@ -268,12 +271,16 @@ for g in superkey logi docker superkey_agents superkey_ops; do
 done
 
 # Ensure /data exists and is writable by superkey users
-# Mode 2775: setgid so new files inherit the superkey group, group-writable
+# Mode 3775: setgid so new files inherit the superkey group, group-writable,
+# and STICKY: a member may add entries but not rename or unlink entries it does
+# not own. Without the sticky bit any managed account -- personal bots
+# included -- could move /data/monitoring aside and replace it, and the
+# deploy tooling runs that tree as root (RTDTK-967 review).
 if [ ! -d /data ]; then
     sudo -n mkdir -p /data
 fi
 sudo -n chgrp superkey /data
-sudo -n chmod 2775 /data
+sudo -n chmod 3775 /data
 
 # Grant human operators scoped passwordless sudo for host troubleshooting
 # (reboots, service management, reading system logs) through a group of their
@@ -299,22 +306,32 @@ add_sudo_cmd /usr/bin/dmesg /bin/dmesg
 add_sudo_cmd /usr/sbin/reboot /sbin/reboot
 add_sudo_cmd /usr/sbin/shutdown /sbin/shutdown
 
-if [ -n "$OPS_SUDO_CMDS" ]; then
-    OPS_SUDOERS="/etc/sudoers.d/superkey-ops"
-    OPS_SUDOERS_LINE="%superkey_ops ALL=(ALL) NOPASSWD: $OPS_SUDO_CMDS"
-    if [ "$(sudo -n cat "$OPS_SUDOERS" 2>/dev/null)" != "$OPS_SUDOERS_LINE" ]; then
-        echo "  Configuring scoped sudo for superkey_ops group..."
-        OPS_TMP=$(mktemp)
-        printf '%s\n' "$OPS_SUDOERS_LINE" > "$OPS_TMP"
-        if sudo -n visudo -cf "$OPS_TMP" >/dev/null 2>&1; then
-            sudo -n cp "$OPS_TMP" "$OPS_SUDOERS"
-            sudo -n chmod 440 "$OPS_SUDOERS"
-            echo "    Installed: $OPS_SUDOERS_LINE"
-        else
-            echo "    ERROR: superkey_ops sudoers failed visudo validation, not installing"
-        fi
-        rm -f "$OPS_TMP"
+# install_sudoers_file <file> <rule>: idempotent, validated with visudo, and
+# atomic -- the candidate is written next to the target under a dotted name
+# (sudo skips names containing a dot) and renamed into place, so sudo never
+# sees a truncated or half-written file.
+install_sudoers_file() {
+    local file="$1" rule="$2" candidate
+    if [ "$(sudo -n cat "$file" 2>/dev/null)" = "$rule" ]; then
+        return 0
     fi
+    echo "  Installing $file..."
+    candidate=$(sudo -n mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")
+    printf '%s\n' "$rule" | sudo -n tee "$candidate" > /dev/null
+    sudo -n chmod 440 "$candidate"
+    if sudo -n visudo -cf "$candidate" >/dev/null 2>&1; then
+        sudo -n mv -f "$candidate" "$file"
+        echo "    Installed: $rule"
+    else
+        sudo -n rm -f "$candidate"
+        echo "    ERROR: $file failed visudo validation, not installing"
+        return 1
+    fi
+}
+
+if [ -n "$OPS_SUDO_CMDS" ]; then
+    install_sudoers_file /etc/sudoers.d/superkey-ops \
+        "%superkey_ops ALL=(ALL) NOPASSWD: $OPS_SUDO_CMDS" || OVERALL_STATUS=1
 fi
 
 # Let TEAM agents run commands as the host's deploy account (the user that owns
@@ -347,39 +364,28 @@ done
 # /etc/sudoers.d/logi -- the file the deploy repo used for the deploy account's
 # own "NOPASSWD: ALL" rule. On a host with a logi deploy account that replaced
 # the deploy rule with the scoped list and silently broke unattended updates
-# (RTDTK-967). The legacy file is removed only when it is exactly what superkey
-# wrote AND the deploy account does not depend on it any more, i.e. its own
-# rule is back; otherwise it stays, with a warning on every run, until
-# deploy's ensure_deploy_sudoers.sh has been run on the host.
+# (RTDTK-967). Superkey is the only writer of "%logi ALL=(ALL) NOPASSWD:" lines,
+# so a legacy file consisting of one such line is superkey's and is removed
+# (the command paths in it may predate an OS upgrade, hence the prefix match).
+# Whether the deploy account has sudo of its own is the deploy repo's business;
+# it is only reported here so the operator knows what to run.
 LEGACY_LOGI_SUDOERS="/etc/sudoers.d/logi"
-LEGACY_LOGI_SUDOERS_LINE="%logi ALL=(ALL) NOPASSWD: $OPS_SUDO_CMDS"
-if [ -n "$OPS_SUDO_CMDS" ] \
-    && [ "$(sudo -n cat "$LEGACY_LOGI_SUDOERS" 2>/dev/null)" = "$LEGACY_LOGI_SUDOERS_LINE" ]; then
-    if [ -z "$AGENT_RUNAS" ] || sudo -n -u "$AGENT_RUNAS" -- sudo -k -n true 2>/dev/null; then
-        sudo -n rm -f "$LEGACY_LOGI_SUDOERS"
-        echo "  Removed legacy $LEGACY_LOGI_SUDOERS (replaced by /etc/sudoers.d/superkey-ops)"
-    else
-        echo "  WARNING: legacy $LEGACY_LOGI_SUDOERS kept: it is the only passwordless sudo the deploy account $AGENT_RUNAS has."
-        echo "           Restore the deploy rule on this host first: sudo bash ~$AGENT_RUNAS/deploy/linux/utilities/ensure_deploy_sudoers.sh (RTDTK-967)"
-    fi
+LEGACY_LOGI_SUDOERS_CONTENT=$(sudo -n cat "$LEGACY_LOGI_SUDOERS" 2>/dev/null || true)
+if [ -n "$LEGACY_LOGI_SUDOERS_CONTENT" ] \
+    && [ "$(printf '%s\n' "$LEGACY_LOGI_SUDOERS_CONTENT" | wc -l)" -eq 1 ] \
+    && [[ "$LEGACY_LOGI_SUDOERS_CONTENT" == "%logi ALL=(ALL) NOPASSWD: "* ]]; then
+    sudo -n rm -f "$LEGACY_LOGI_SUDOERS"
+    echo "  Removed legacy $LEGACY_LOGI_SUDOERS (replaced by /etc/sudoers.d/superkey-ops)"
+fi
+if [ -n "$AGENT_RUNAS" ] && ! sudo -n -u "$AGENT_RUNAS" -- sudo -k -n true 2>/dev/null; then
+    echo "  NOTE: deploy account $AGENT_RUNAS has no passwordless sudo on this host. If its unattended"
+    echo "        updates need it (cameras, AMRs), provision the deploy repo's rule:"
+    echo "        sudo bash ~$AGENT_RUNAS/deploy/linux/utilities/ensure_deploy_sudoers.sh $AGENT_RUNAS (RTDTK-967)"
 fi
 
-AGENT_SUDOERS="/etc/sudoers.d/superkey-agents"
 if [ -n "$AGENT_RUNAS" ]; then
-    AGENT_SUDOERS_LINE="%superkey_agents ALL=($AGENT_RUNAS) NOPASSWD: ALL"
-    if [ "$(sudo -n cat "$AGENT_SUDOERS" 2>/dev/null)" != "$AGENT_SUDOERS_LINE" ]; then
-        echo "  Configuring run-as-$AGENT_RUNAS sudo for superkey_agents group..."
-        AGENT_TMP=$(mktemp)
-        printf '%s\n' "$AGENT_SUDOERS_LINE" > "$AGENT_TMP"
-        if sudo -n visudo -cf "$AGENT_TMP" >/dev/null 2>&1; then
-            sudo -n cp "$AGENT_TMP" "$AGENT_SUDOERS"
-            sudo -n chmod 440 "$AGENT_SUDOERS"
-            echo "    Installed: $AGENT_SUDOERS_LINE"
-        else
-            echo "    ERROR: agent sudoers failed visudo validation, not installing"
-        fi
-        rm -f "$AGENT_TMP"
-    fi
+    install_sudoers_file /etc/sudoers.d/superkey-agents \
+        "%superkey_agents ALL=($AGENT_RUNAS) NOPASSWD: ALL" || OVERALL_STATUS=1
 else
     echo "  No deploy account (logi/administrator/ubuntu) on this host;"
     echo "  skipping the superkey_agents run-as sudoers rule."
@@ -525,7 +531,6 @@ setup_bot() {
     echo "      Done setting up bot $ACCT"
 }
 
-OVERALL_STATUS=0
 REMOTE_EOF
 )
 
