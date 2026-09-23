@@ -5,7 +5,9 @@
 # This script connects to each server configured in Superkey and:
 # - Creates system users for authorized users
 # - Adds their public SSH keys
-# - Adds users to the 'superkey' group (marker) and 'logi' group (access)
+# - Adds users to the 'superkey' group (marker), 'logi' group (access) and
+#   'superkey_ops' group (scoped NOPASSWD sudo for host troubleshooting,
+#   /etc/sudoers.d/superkey-ops; humans only)
 # - Provisions per-user bot accounts (<user>_<bot>): a separate, unprivileged
 #   account (superkey + adm/systemd-journal for read-only logs, no logi/docker)
 #   with a hardened bot key
@@ -259,7 +261,7 @@ if ! sudo -n true 2>/dev/null; then
 fi
 
 # Ensure required groups exist
-for g in superkey logi docker superkey_agents; do
+for g in superkey logi docker superkey_agents superkey_ops; do
     if ! getent group "$g" &>/dev/null; then
         sudo -n groupadd "$g" 2>/dev/null || true
     fi
@@ -273,17 +275,20 @@ fi
 sudo -n chgrp superkey /data
 sudo -n chmod 2775 /data
 
-# Grant the logi group scoped passwordless sudo for host troubleshooting
-# (reboots, service management, reading system logs). Managed accounts are
-# otherwise unprivileged; this replaces the implicit docker-based root path
-# with explicit, audited sudo. Paths are resolved per-host (distros differ)
-# and the file is validated with visudo before install.
-LOGI_SUDO_CMDS=""
+# Grant human operators scoped passwordless sudo for host troubleshooting
+# (reboots, service management, reading system logs) through a group of their
+# own: only setup_user joins superkey_ops, bots and agents never do, and the
+# deploy account is not in it. The rule lives in a file superkey owns. The
+# deploy account's own rule belongs to the deploy repo
+# (/etc/sudoers.d/deploy-<user>, linux/utilities/ensure_deploy_sudoers.sh) and
+# is never written here -- RTDTK-967. Paths are resolved per-host (distros
+# differ) and the file is validated with visudo before install.
+OPS_SUDO_CMDS=""
 add_sudo_cmd() {
     for p in "$@"; do
         if [ -x "$p" ]; then
-            [ -n "$LOGI_SUDO_CMDS" ] && LOGI_SUDO_CMDS+=", "
-            LOGI_SUDO_CMDS+="$p"
+            [ -n "$OPS_SUDO_CMDS" ] && OPS_SUDO_CMDS+=", "
+            OPS_SUDO_CMDS+="$p"
             return
         fi
     done
@@ -294,21 +299,21 @@ add_sudo_cmd /usr/bin/dmesg /bin/dmesg
 add_sudo_cmd /usr/sbin/reboot /sbin/reboot
 add_sudo_cmd /usr/sbin/shutdown /sbin/shutdown
 
-if [ -n "$LOGI_SUDO_CMDS" ]; then
-    LOGI_SUDOERS="/etc/sudoers.d/logi"
-    LOGI_SUDOERS_LINE="%logi ALL=(ALL) NOPASSWD: $LOGI_SUDO_CMDS"
-    if [ "$(sudo -n cat "$LOGI_SUDOERS" 2>/dev/null)" != "$LOGI_SUDOERS_LINE" ]; then
-        echo "  Configuring scoped sudo for logi group..."
-        LOGI_TMP=$(mktemp)
-        printf '%s\n' "$LOGI_SUDOERS_LINE" > "$LOGI_TMP"
-        if sudo -n visudo -cf "$LOGI_TMP" >/dev/null 2>&1; then
-            sudo -n cp "$LOGI_TMP" "$LOGI_SUDOERS"
-            sudo -n chmod 440 "$LOGI_SUDOERS"
-            echo "    Installed: $LOGI_SUDOERS_LINE"
+if [ -n "$OPS_SUDO_CMDS" ]; then
+    OPS_SUDOERS="/etc/sudoers.d/superkey-ops"
+    OPS_SUDOERS_LINE="%superkey_ops ALL=(ALL) NOPASSWD: $OPS_SUDO_CMDS"
+    if [ "$(sudo -n cat "$OPS_SUDOERS" 2>/dev/null)" != "$OPS_SUDOERS_LINE" ]; then
+        echo "  Configuring scoped sudo for superkey_ops group..."
+        OPS_TMP=$(mktemp)
+        printf '%s\n' "$OPS_SUDOERS_LINE" > "$OPS_TMP"
+        if sudo -n visudo -cf "$OPS_TMP" >/dev/null 2>&1; then
+            sudo -n cp "$OPS_TMP" "$OPS_SUDOERS"
+            sudo -n chmod 440 "$OPS_SUDOERS"
+            echo "    Installed: $OPS_SUDOERS_LINE"
         else
-            echo "    ERROR: logi sudoers failed visudo validation, not installing"
+            echo "    ERROR: superkey_ops sudoers failed visudo validation, not installing"
         fi
-        rm -f "$LOGI_TMP"
+        rm -f "$OPS_TMP"
     fi
 fi
 
@@ -338,6 +343,27 @@ for u in logi administrator ubuntu; do
 done
 : "${AGENT_RUNAS:=$AGENT_RUNAS_FALLBACK}"
 
+# Until 2026-09 the scoped rule above was written as "%logi ..." to
+# /etc/sudoers.d/logi -- the file the deploy repo used for the deploy account's
+# own "NOPASSWD: ALL" rule. On a host with a logi deploy account that replaced
+# the deploy rule with the scoped list and silently broke unattended updates
+# (RTDTK-967). The legacy file is removed only when it is exactly what superkey
+# wrote AND the deploy account does not depend on it any more, i.e. its own
+# rule is back; otherwise it stays, with a warning on every run, until
+# deploy's ensure_deploy_sudoers.sh has been run on the host.
+LEGACY_LOGI_SUDOERS="/etc/sudoers.d/logi"
+LEGACY_LOGI_SUDOERS_LINE="%logi ALL=(ALL) NOPASSWD: $OPS_SUDO_CMDS"
+if [ -n "$OPS_SUDO_CMDS" ] \
+    && [ "$(sudo -n cat "$LEGACY_LOGI_SUDOERS" 2>/dev/null)" = "$LEGACY_LOGI_SUDOERS_LINE" ]; then
+    if [ -z "$AGENT_RUNAS" ] || sudo -n -u "$AGENT_RUNAS" -- sudo -k -n true 2>/dev/null; then
+        sudo -n rm -f "$LEGACY_LOGI_SUDOERS"
+        echo "  Removed legacy $LEGACY_LOGI_SUDOERS (replaced by /etc/sudoers.d/superkey-ops)"
+    else
+        echo "  WARNING: legacy $LEGACY_LOGI_SUDOERS kept: it is the only passwordless sudo the deploy account $AGENT_RUNAS has."
+        echo "           Restore the deploy rule on this host first: sudo bash ~$AGENT_RUNAS/deploy/linux/utilities/ensure_deploy_sudoers.sh (RTDTK-967)"
+    fi
+fi
+
 AGENT_SUDOERS="/etc/sudoers.d/superkey-agents"
 if [ -n "$AGENT_RUNAS" ]; then
     AGENT_SUDOERS_LINE="%superkey_agents ALL=($AGENT_RUNAS) NOPASSWD: ALL"
@@ -365,7 +391,7 @@ if getent group superkey &>/dev/null; then
     for MEMBER in $SUPERKEY_MEMBERS; do
         if ! echo " $AUTHORIZED_USERS " | grep -q " $MEMBER "; then
             echo "    Revoking access for $MEMBER..."
-            for g in superkey logi docker superkey_agents adm systemd-journal; do
+            for g in superkey logi docker superkey_agents superkey_ops adm systemd-journal; do
                 sudo -n gpasswd -d "$MEMBER" "$g" 2>/dev/null || true
             done
             REV_HOME=$(getent passwd "$MEMBER" | cut -d: -f6)
@@ -397,10 +423,11 @@ setup_user() {
         sudo -n usermod -U "$USERNAME" 2>/dev/null || true
     fi
 
-    # superkey/logi/docker are created above if missing; adm/systemd-journal
-    # are standard system groups (for reading system logs) and are only joined
-    # if they already exist on the host.
-    for g in superkey logi docker adm systemd-journal; do
+    # superkey/logi/docker/superkey_ops are created above if missing;
+    # adm/systemd-journal are standard system groups (for reading system logs)
+    # and are only joined if they already exist on the host. superkey_ops is
+    # the humans' scoped sudo (see above): bots and agents are never in it.
+    for g in superkey logi docker superkey_ops adm systemd-journal; do
         if ! getent group "$g" &>/dev/null; then
             continue
         fi

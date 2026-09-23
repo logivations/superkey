@@ -278,22 +278,39 @@ For each server, the deploy script:
 1. **Fetches access data** from `/api/deploy-data`
 2. **Connects via SSH** as `superkey-deploy`
 3. **Revokes access** for users who are no longer authorized:
-   - Removes them from `superkey` and `logi` groups
+   - Removes them from the `superkey`, `logi` and `superkey_ops` groups
    - Deletes their `authorized_keys`
    - Locks their account
 4. **Creates/updates users** who are authorized:
    - Creates system user (username from email: `john.doe@example.com` → `john_doe`)
    - Adds to `superkey` group (marker for Superkey-managed accounts)
-   - Adds to `logi` group (for shared permissions + scoped sudo)
+   - Adds to `logi` group (shared permissions, e.g. `/data`)
+   - Adds to `superkey_ops` group (scoped sudo, see below)
    - Adds to `docker` group (container management)
    - Adds to `adm` and `systemd-journal` groups, when present (read system logs)
    - Sets up SSH authorized_keys with their public key
 
-It also installs `/etc/sudoers.d/logi`, granting the `logi` group **scoped
-passwordless sudo** for host troubleshooting (`systemctl`, `journalctl`,
-`dmesg`, `reboot`, `shutdown`). Command paths are resolved per-host and the
-file is validated with `visudo` before install. Managed accounts have a locked
-password and no general sudo, so this is the only sudo they get.
+It also installs `/etc/sudoers.d/superkey-ops`, granting the `superkey_ops`
+group **scoped passwordless sudo** for host troubleshooting (`systemctl`,
+`journalctl`, `dmesg`, `reboot`, `shutdown`). Only human accounts join that
+group. Command paths are resolved per-host and the file is validated with
+`visudo` before install. Managed accounts have a locked password and no general
+sudo, so this is the only sudo they get. Note that unrestricted `systemctl`
+and the `docker` group are root-equivalent in practice; the scope limits what
+is *convenient*, not what a determined operator can do.
+
+**Sudoers ownership.** Superkey only ever writes files named
+`/etc/sudoers.d/superkey-*`. The deploy account's own rule (`logi` on cameras
+and AMRs: `NOPASSWD: ALL`, needed by the unattended update path) is the deploy
+repo's, in `/etc/sudoers.d/deploy-<user>`, provisioned by
+`linux/utilities/ensure_deploy_sudoers.sh`. Until 2026-09 superkey wrote its
+rule as `%logi …` into `/etc/sudoers.d/logi`, the deploy repo's file, which
+replaced the deploy rule and silently broke every unattended update on such
+hosts ([RTDTK-967](https://lvserv01.logivations.com/browse/RTDTK-967)).
+The deploy script removes that legacy file only when it is exactly what
+superkey wrote **and** the deploy account no longer depends on it (its own rule
+is back); otherwise it warns on every run until someone runs
+`sudo bash ~logi/deploy/linux/utilities/ensure_deploy_sudoers.sh` on the host.
 
 For **team agents** it additionally installs `/etc/sudoers.d/superkey-agents`
 (`%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, also `visudo`-validated)
@@ -308,9 +325,10 @@ account skip the rule with a message.
 | Group      | Purpose                                                                   |
 |------------|---------------------------------------------------------------------------|
 | `superkey` | Marker group. All Superkey-managed users are in this group. Used to identify which accounts can be safely managed (revoked) by Superkey without affecting other system users. |
-| `logi`     | Access group. Used for shared permissions like access to certain directories and sudo rules. The deploy script installs `/etc/sudoers.d/logi` granting this group scoped NOPASSWD sudo (`systemctl`, `journalctl`, `dmesg`, `reboot`, `shutdown`). Configure additional server permissions based on membership in this group. |
+| `logi`     | Access group. Used for shared permissions like access to certain directories (`/data`). Carries no sudo rule of its own: the `logi` *user* is the deploy account, with its own rule owned by the deploy repo. |
+| `superkey_ops` | **Humans only.** Carries `/etc/sudoers.d/superkey-ops`: scoped NOPASSWD sudo (`systemctl`, `journalctl`, `dmesg`, `reboot`, `shutdown`) for host troubleshooting. Bots, agents and the deploy account are never in it. |
 | `adm` / `systemd-journal` | Standard system groups. Managed users are added to these (when present) so they can read full system/kernel logs via `journalctl`. |
-| `superkey_agents` | **Team agents only.** Carries `/etc/sudoers.d/superkey-agents`: `%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, where the deploy user is the first of `logi`/`administrator`/`ubuntu` that exists and owns a `~/deploy` checkout. It lets an agent drive the deploy tooling (`checkout_release_deepcv`, `checkout_master`, `update_w2mo`, `run_docker.sh`) as that user — which is the only way those scripts are correct, since `run_docker.sh` mounts the invoking user's home into the container. It does **not** grant the deploy user's own password-gated sudo. Team agents already hold `docker` (root-equivalent), so this is no new privilege tier; it is the supported path plus a sudo audit trail. Personal bots are never in this group. |
+| `superkey_agents` | **Team agents only.** Carries `/etc/sudoers.d/superkey-agents`: `%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, where the deploy user is the first of `logi`/`administrator`/`ubuntu` that exists and owns a `~/deploy` checkout. It lets an agent drive the deploy tooling (`checkout_release_deepcv`, `checkout_master`, `update_w2mo`, `run_docker.sh`) as that user — which is the only way those scripts are correct, since `run_docker.sh` mounts the invoking user's home into the container. Running as the deploy user, an agent inherits whatever sudo that account has (on cameras and AMRs: `NOPASSWD: ALL`, from the deploy repo's rule). Team agents already hold `docker` (root-equivalent), so this is no new privilege tier; it is the supported path plus a sudo audit trail. Personal bots are never in this group. |
 
 ---
 
