@@ -103,6 +103,16 @@ db.exec(`
     FOREIGN KEY (agent_id) REFERENCES team_agents(id) ON DELETE CASCADE,
     FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE
   );
+
+  -- Labels a label-scoped PERSONAL agent is limited to (bot_keys.label_scoped).
+  -- Narrowing only: the agent still never lands where its owner can't go.
+  CREATE TABLE IF NOT EXISTS bot_labels (
+    bot_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    PRIMARY KEY (bot_id, label_id),
+    FOREIGN KEY (bot_id) REFERENCES bot_keys(id) ON DELETE CASCADE,
+    FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE
+  );
 `);
 
 // Migrations for existing databases
@@ -111,6 +121,12 @@ try {
 } catch (e) { /* Column already exists */ }
 try {
   db.exec(`ALTER TABLE servers ADD COLUMN deployed_keys_hash TEXT`);
+} catch (e) { /* Column already exists */ }
+// 0 = the personal agent follows its owner onto every device (the original
+// behaviour, kept for existing agents); 1 = only devices carrying one of its
+// bot_labels.
+try {
+  db.exec(`ALTER TABLE bot_keys ADD COLUMN label_scoped INTEGER NOT NULL DEFAULT 0`);
 } catch (e) { /* Column already exists */ }
 
 // Ensure superkey_admins group exists

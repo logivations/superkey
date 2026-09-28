@@ -116,6 +116,12 @@ the user already has.
   already reach** — access is derived from the owner's group membership, so a
   user can never grant a bot more than they have. Self-service is therefore
   safe: the user's own scope is the hard ceiling.
+- Optionally **label-scoped** (`bot_keys.label_scoped` + `bot_labels`): the
+  owner picks labels under **Access** in My agents (only labels they hold),
+  and the bot then lands only on the owner's servers carrying one of them —
+  none attached means nowhere. Unscoped (the default, and every bot created
+  before this existed) follows the owner everywhere. `serverUserBots()` is
+  the single filter behind deploy-data, the keys hash and the access views.
 - The bot account joins the **`superkey`** marker group (managed/revocable by
   superkey, access to the shared `/data` dir) plus **`adm`/`systemd-journal`**
   for **read-only** access to the full system journal. It is **not** in
@@ -133,7 +139,9 @@ the user already has.
   authorized list, so the next deploy locks the account and removes its key
   (the same revoke path used for departed users).
 - Public keys are validated server-side (single line, must start with a real
-  key type) to prevent `authorized_keys` option/line injection.
+  key type) to prevent `authorized_keys` option/line injection. The base64
+  blob must also decode to that same key type: sshd silently skips a line it
+  can't parse, so a copy/paste slip would otherwise save fine and never work.
 
 ## Technology Stack
 

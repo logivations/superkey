@@ -401,10 +401,11 @@ Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub           <span style="color:#8
         <p class="lead">A personal agent (your <strong>nemo</strong>, for instance) runs as you. It gets its own
           key and logs in as a dedicated unprivileged account, <code>&lt;you&gt;_&lt;agent&gt;</code> (shortened
           to Linux's 32-char limit if needed — the exact name is in the <strong>Logs in as</strong> column), on
-          exactly the devices you can already reach. It can never have more access than you do, and you can revoke it at
+          the devices you can already reach — all of them, or only those carrying labels you pick under
+          <strong>Access</strong>. It can never have more access than you do, and you can revoke it at
           any time. Shared agents live in the Team agents tab.</p>
         <table class="data">
-          <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th></th></tr></thead>
+          <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Source restriction</th><th>Reaches</th><th></th></tr></thead>
           <tbody id="bots-list"></tbody>
         </table>
       </div>
@@ -625,6 +626,34 @@ cat ~/.ssh/id_nemo.pub</pre>
       </div>
       <div class="field"><label>Groups with access</label><div id="gm-groups"></div></div>
       <div id="gm-message" class="alert" hidden></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="bot-modal" role="dialog" aria-modal="true" aria-labelledby="bot-modal-title" hidden>
+  <div class="modal-content">
+    <div class="modal-head">
+      <h3 id="bot-modal-title">Agent access</h3>
+      <button class="modal-close" data-close="bot-modal" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted">Your agent never reaches more than you do. Limit it further to the devices
+        carrying one of the labels below.</p>
+      <div class="field" style="margin-top:14px">
+        <label class="toggle"><input type="radio" name="bm-scope" id="bm-all" value="all"> All devices I can reach</label>
+        <label class="toggle"><input type="radio" name="bm-scope" id="bm-labels" value="labels"> Only devices with these labels</label>
+      </div>
+      <div id="bm-label-fields">
+        <div class="field">
+          <label for="bm-add">Attach a label</label>
+          <div class="flex-row">
+            <select id="bm-add"></select>
+            <button class="btn solid" id="bm-add-btn">Add</button>
+          </div>
+        </div>
+        <div class="field"><label>Attached</label><div id="bm-list"></div></div>
+      </div>
+      <div id="bm-message" class="alert" hidden></div>
     </div>
   </div>
 </div>
@@ -908,21 +937,88 @@ function keySummary(key) {
   return esc(parts[0]) + ' …' + esc(parts[1].slice(-12));
 }
 
+let myBots = [];
+let myLabels = [];
+
+function botReach(b) {
+  const n = `<div class="muted" style="font-size:11.5px">${b.device_count} device${b.device_count === 1 ? '' : 's'}</div>`;
+  if (!b.label_scoped) return 'all my devices' + n;
+  return (b.labels.length
+    ? b.labels.map(l => `<span class="tg">${esc(l.name)}</span>`).join('')
+    : '<span class="tg none">no labels — no access</span>') + n;
+}
+
 async function loadBots() {
-  let bots = [];
-  try { bots = await api('/api/me/bots'); }
+  try { myBots = await api('/api/me/bots'); }
   catch (e) { flash('bot-message', e.message, 'error'); return; }
-  $('bots-list').innerHTML = bots.length ? bots.map(b => `
+  $('bots-list').innerHTML = myBots.length ? myBots.map(b => `
     <tr>
       <td class="mono">${esc(b.name)}</td>
       <td class="mono">${esc(b.account)}</td>
       <td class="mono">${keySummary(b.public_key)}</td>
       <td class="mono">${b.source_cidr ? esc(b.source_cidr) : '—'}</td>
-      <td class="actions"><button class="btn danger" data-revoke-bot="${b.id}"
+      <td>${botReach(b)}</td>
+      <td class="actions"><button class="btn" data-bot-access="${b.id}">Access</button>
+        <button class="btn danger" data-revoke-bot="${b.id}"
         data-name="${esc(b.name)}">Revoke</button></td>
     </tr>`).join('')
-    : '<tr><td colspan="5" class="muted">No agents yet.</td></tr>';
+    : '<tr><td colspan="6" class="muted">No agents yet.</td></tr>';
 }
+
+function renderBotModal(botId) {
+  const bot = myBots.find(b => b.id === botId);
+  if (!bot) return;
+  $('bot-modal-title').textContent = 'Access: ' + bot.name;
+  $('bm-add-btn').dataset.bot = botId;
+  $(bot.label_scoped ? 'bm-labels' : 'bm-all').checked = true;
+  $('bm-label-fields').hidden = !bot.label_scoped;
+
+  const attached = new Set(bot.labels.map(l => l.id));
+  const addable = myLabels.filter(l => !attached.has(l.id));
+  $('bm-add').innerHTML = addable.length
+    ? addable.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('')
+    : '<option value="">No labels left to attach</option>';
+  $('bm-add-btn').disabled = addable.length === 0;
+  $('bm-list').innerHTML = bot.labels.length
+    ? bot.labels.map(l => `<span class="tg">${esc(l.name)}<button data-bot-remove="${l.id}"
+        data-bot="${botId}" aria-label="Remove ${esc(l.name)}">&times;</button></span>`).join('')
+    : '<span class="tg none">no labels — the agent has no access</span>';
+}
+
+async function afterBotChange(botId, message) {
+  await loadBots();
+  renderBotModal(botId);
+  refreshBotLens();
+  flash('bm-message', message);
+}
+
+const openBotModal = guarded('bot-message', async id => {
+  myLabels = await api('/api/me/labels');
+  renderBotModal(id);
+  clearFlash('bm-message');
+  openModal('bot-modal');
+});
+
+const setBotScope = guarded('bm-message', async labelScoped => {
+  const botId = Number($('bm-add-btn').dataset.bot);
+  await api(`/api/me/bots/${botId}/scope`, { method: 'PUT', body: JSON.stringify({ labelScoped }) });
+  await afterBotChange(botId, labelScoped
+    ? 'Limited to the attached labels. It applies on the next deploy.'
+    : 'The agent reaches all your devices again. It applies on the next deploy.');
+});
+
+const attachBotLabel = guarded('bm-message', async () => {
+  const botId = Number($('bm-add-btn').dataset.bot);
+  const labelId = $('bm-add').value;
+  if (!labelId) return;
+  await api(`/api/me/bots/${botId}/labels/${labelId}`, { method: 'POST' });
+  await afterBotChange(botId, 'Label attached. It applies on the next deploy.');
+});
+
+const detachBotLabel = guarded('bm-message', async (botId, labelId) => {
+  await api(`/api/me/bots/${botId}/labels/${labelId}`, { method: 'DELETE' });
+  await afterBotChange(botId, 'Label removed. It applies on the next deploy.');
+});
 
 const saveBot = guarded('bot-message', async () => {
   const name = $('bot-name').value.trim();
@@ -1105,18 +1201,20 @@ async function resolveLens(value) {
     };
   }
   if (kind === 'bot') {
-    // 'bot:<ownerId>:<name>' — a personal agent has no wiring of its own; it
-    // inherits its owner's devices and is capped by them.
+    // 'bot:<ownerId>:<name>' — a personal agent inherits its owner's devices
+    // and is capped by them, optionally narrowed to its own labels.
     const cut = key.indexOf(':');
     const owner = allUsers.find(u => u.id === Number(key.slice(0, cut)));
     const bot = owner && (owner.bots || []).find(b => b.name === key.slice(cut + 1));
     if (!bot) return resolveLens('all');
-    const servers = await api('/api/user-servers/' + owner.id);
+    const servers = await api('/api/bot-servers/' + bot.id);
     return {
       kind: 'Personal agent', name: bot.account,
-      meta: `owned by ${owner.name || owner.email} · inherits their access`,
+      meta: `owned by ${owner.name || owner.email} · ` + (bot.label_scoped
+        ? "their access, limited to the agent's labels" : 'inherits their access'),
       hosts: new Set(servers.map(s => s.hostname)),
-      via: owner.group_names || [], viaLabel: "Owner's groups",
+      via: bot.label_scoped ? bot.labels.map(l => l.name) : owner.group_names || [],
+      viaLabel: bot.label_scoped ? 'Labels attached' : "Owner's groups",
     };
   }
   if (kind === 'group') {
@@ -1536,6 +1634,9 @@ $('sync-groups-btn').addEventListener('click', syncGroups);
 $('dm-add-btn').addEventListener('click', addDeviceLabel);
 $('gm-add-btn').addEventListener('click', addGrant);
 $('am-add-btn').addEventListener('click', attachAgentLabel);
+$('bm-add-btn').addEventListener('click', attachBotLabel);
+document.querySelectorAll('input[name="bm-scope"]').forEach(r =>
+  r.addEventListener('change', e => setBotScope(e.target.value === 'labels')));
 $('lens-select').addEventListener('change', e => applyLens(e.target.value));
 $('deploy-toggle').addEventListener('change', e =>
   document.body.classList.toggle('show-deploy', e.target.checked));
@@ -1552,7 +1653,8 @@ $('plan-filter').addEventListener('input', () => {
 
 /* One delegated listener per region beats an onclick attribute per row. */
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-host], [data-revoke-bot], [data-agent-labels], [data-delete-agent],' +
+  const t = e.target.closest('[data-host], [data-revoke-bot], [data-bot-access], [data-bot-remove],' +
+    '[data-agent-labels], [data-delete-agent],' +
     '[data-agent-remove], [data-device-labels], [data-device-remove], [data-download], [data-grant],' +
     '[data-delete-label], [data-grant-remove], [data-lens-user], [data-lens-agent]');
   if (!t) return;
@@ -1560,6 +1662,8 @@ document.addEventListener('click', e => {
 
   if (d.host && !t.classList.contains('static')) return void selectDevice(d.host);
   if (d.revokeBot) return void revokeBot(d.revokeBot, d.name);
+  if (d.botAccess) return void openBotModal(Number(d.botAccess));
+  if (d.botRemove) return void detachBotLabel(Number(d.bot), Number(d.botRemove));
   if (d.agentLabels) return void openAgentModal(Number(d.agentLabels));
   if (d.deleteAgent) return void deleteAgent(d.deleteAgent, d.name);
   if (d.agentRemove) return void detachAgentLabel(Number(d.agent), Number(d.agentRemove));

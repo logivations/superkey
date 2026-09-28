@@ -114,8 +114,11 @@ restriction). Personal bots get groups `superkey, adm, systemd-journal`
 agents additionally join `docker`:
 
 - **Personal agents** ("My Agents" tab): owned by a user, log in as
-  `<user>_<name>`, and reach exactly the devices the owner can — access is
-  inherited and capped, revocable by the owner any time.
+  `<user>_<name>`, and reach the devices the owner can — access is
+  inherited and capped, revocable by the owner any time. Under **Access**
+  the owner can limit an agent to devices carrying chosen labels (only
+  labels they hold; no labels = no access), the same model as team agents
+  but still never beyond the owner's own reach. Unlimited is the default.
 - **Team agents** ("Team Agents" tab): shared nemo agents with no owner.
   The nemo dispatcher registers them automatically via
   `POST /api/agents/register` (machine auth: `AGENT_API_TOKEN` bearer

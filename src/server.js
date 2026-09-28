@@ -68,7 +68,14 @@ function isValidPublicKey(key) {
   const parts = k.split(/\s+/);
   if (parts.length < 2) return false;
   if (!SSH_KEY_TYPES.has(parts[0])) return false;
-  return /^[A-Za-z0-9+/]+={0,3}$/.test(parts[1]);
+  if (!/^[A-Za-z0-9+/]+={0,3}$/.test(parts[1])) return false;
+  // The blob starts with its own key type (uint32 length + name). sshd
+  // silently skips a line where it doesn't parse, so a copy/paste slip in
+  // the key would otherwise be accepted here and never work on any host.
+  const blob = Buffer.from(parts[1], 'base64');
+  if (blob.length < 4) return false;
+  const typeLen = blob.readUInt32BE(0);
+  return blob.length >= 4 + typeLen && blob.toString('latin1', 4, 4 + typeLen) === parts[0];
 }
 
 // Bot names become part of a Linux username, so keep them strict.
@@ -154,9 +161,40 @@ function serverTeamAgents(server) {
 // name is what actually appears on the host, so it is computed here rather
 // than reassembled in the browser.
 function userBots(user) {
-  return db.prepare('SELECT id, name FROM bot_keys WHERE user_id = ? ORDER BY name')
+  return db.prepare('SELECT id, name, label_scoped FROM bot_keys WHERE user_id = ? ORDER BY name')
     .all(user.id)
-    .map(b => ({ id: b.id, name: b.name, account: botAccount(user.email, b.name) }));
+    .map(b => ({
+      id: b.id,
+      name: b.name,
+      account: botAccount(user.email, b.name),
+      label_scoped: !!b.label_scoped,
+      labels: botLabels(b.id)
+    }));
+}
+
+function botLabels(botId) {
+  return db.prepare(`
+    SELECT l.id, l.name FROM labels l
+    JOIN bot_labels bl ON l.id = bl.label_id
+    WHERE bl.bot_id = ? ORDER BY l.name
+  `).all(botId);
+}
+
+// A user's personal agents that land on a server. Callers only pass users
+// the server authorizes, so the owner's access is always the cap. An
+// unscoped agent follows its owner everywhere; a label-scoped one only onto
+// servers carrying one of its labels (none attached = nowhere), the same
+// label semantics as a team agent.
+function serverUserBots(server, userId) {
+  return db.prepare(`
+    SELECT b.id, b.name, b.public_key, b.source_cidr FROM bot_keys b
+    WHERE b.user_id = ? AND (b.label_scoped = 0 OR EXISTS (
+      SELECT 1 FROM bot_labels bl
+      JOIN server_labels sl ON sl.label_id = bl.label_id
+      WHERE bl.bot_id = b.id AND sl.server_id = ?
+    ))
+    ORDER BY b.name
+  `).all(userId, server.id);
 }
 
 // Compute hash of users/keys for a server to detect if deployment is
@@ -164,13 +202,10 @@ function userBots(user) {
 // restricted server is "up to date" exactly when the FILTERED set is on it.
 function computeServerKeysHash(server) {
   const users = serverAuthorizedUsers(server);
-  const botsStmt = db.prepare(
-    'SELECT name, public_key, source_cidr FROM bot_keys WHERE user_id = ? ORDER BY name'
-  );
   const agents = serverTeamAgents(server);
   const data = [
     ...users.filter(u => u.public_key).map(u => `${u.email}:${u.public_key}`),
-    ...users.flatMap(u => botsStmt.all(u.id).map(b => `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`)),
+    ...users.flatMap(u => serverUserBots(server, u.id).map(b => `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`)),
     ...agents.map(a => `agent/${a.name}:${a.public_key}:${a.source_cidr || ''}`)
   ].join('\n');
   return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
@@ -684,9 +719,16 @@ app.put('/api/me/public-key', isAuthenticated, (req, res) => {
 // already reach. A user only ever sees/edits their own bots.
 app.get('/api/me/bots', isAuthenticated, (req, res) => {
   const bots = db.prepare(
-    'SELECT id, name, public_key, source_cidr, created_at FROM bot_keys WHERE user_id = ? ORDER BY name'
+    'SELECT id, name, public_key, source_cidr, label_scoped, created_at FROM bot_keys WHERE user_id = ? ORDER BY name'
   ).all(req.user.id);
-  res.json(bots.map(b => ({ ...b, account: botAccount(req.user.email, b.name) })));
+  const mine = userServers(req.user.id);
+  res.json(bots.map(b => ({
+    ...b,
+    label_scoped: !!b.label_scoped,
+    account: botAccount(req.user.email, b.name),
+    labels: botLabels(b.id),
+    device_count: botServers(b, mine).length
+  })));
 });
 
 app.post('/api/me/bots', isAuthenticated, (req, res) => {
@@ -724,6 +766,45 @@ app.post('/api/me/bots', isAuthenticated, (req, res) => {
 app.delete('/api/me/bots/:id', isAuthenticated, (req, res) => {
   const result = db.prepare('DELETE FROM bot_keys WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Bot not found' });
+  db.prepare('DELETE FROM bot_labels WHERE bot_id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// Label scoping of a personal agent. Every change here can only narrow
+// what the agent reaches (the owner's access stays the cap), so it is
+// self-service like the rest of My agents.
+function ownBot(req, res) {
+  const bot = db.prepare('SELECT id FROM bot_keys WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!bot) res.status(404).json({ error: 'Bot not found' });
+  return bot;
+}
+
+app.put('/api/me/bots/:id/scope', isAuthenticated, (req, res) => {
+  const bot = ownBot(req, res);
+  if (!bot) return;
+  if (typeof req.body.labelScoped !== 'boolean') {
+    return res.status(400).json({ error: 'labelScoped must be true or false.' });
+  }
+  db.prepare('UPDATE bot_keys SET label_scoped = ? WHERE id = ?').run(req.body.labelScoped ? 1 : 0, bot.id);
+  res.json({ success: true });
+});
+
+app.post('/api/me/bots/:id/labels/:labelId', isAuthenticated, (req, res) => {
+  const bot = ownBot(req, res);
+  if (!bot) return;
+  const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(req.params.labelId);
+  if (!label) return res.status(404).json({ error: 'Label not found' });
+  if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, label.id)) {
+    return res.status(403).json({ error: 'You can only attach labels you have access to yourself.' });
+  }
+  db.prepare('INSERT OR IGNORE INTO bot_labels (bot_id, label_id) VALUES (?, ?)').run(bot.id, label.id);
+  res.json({ success: true });
+});
+
+app.delete('/api/me/bots/:id/labels/:labelId', isAuthenticated, (req, res) => {
+  const bot = ownBot(req, res);
+  if (!bot) return;
+  db.prepare('DELETE FROM bot_labels WHERE bot_id = ? AND label_id = ?').run(bot.id, req.params.labelId);
   res.json({ success: true });
 });
 
@@ -871,7 +952,7 @@ app.get('/api/users', isAdmin, (req, res) => {
     byUser.get(r.user_id).push(r.name);
   }
   // Bots inline for the same reason: the access views show a user's personal
-  // agents next to the user, and they reach whatever the user reaches.
+  // agents next to the user (with their label scoping, if any).
   res.json(users.map(u => ({ ...u, group_names: byUser.get(u.id) || [], bots: userBots(u) })));
 });
 
@@ -1146,6 +1227,8 @@ app.post('/api/labels', isAdmin, (req, res) => {
 
 app.delete('/api/labels/:id', isAdmin, (req, res) => {
   db.prepare('DELETE FROM labels WHERE id = ?').run(req.params.id);
+  // Foreign keys aren't enforced, so the link row would outlive the label.
+  db.prepare('DELETE FROM bot_labels WHERE label_id = ?').run(req.params.id);
   res.json({ success: true });
 });
 
@@ -1245,11 +1328,31 @@ app.get('/api/labels/:labelId/groups', isAuthenticated, (req, res) => {
   res.json(groups);
 });
 
-// Shared shaping for the "which servers can this user reach" views.
+// The extra fields every access view adds on top of a raw server row.
+function withDeployState(s) {
+  const expectedHash = computeServerKeysHash(s);
+  return {
+    ...s,
+    expected_keys_hash: expectedHash,
+    is_up_to_date: s.deployed_keys_hash === expectedHash,
+    restricted: !!restricted.policyFor(s.hostname)
+  };
+}
+
+// Devices a user reaches, for the access views (raw rows, no deploy state).
 // Restricted servers where the user's groups aren't in the policy's
 // allowed_groups are dropped: label wiring says yes, but they would never
 // be deployed there, so showing the server would be a lie.
-function serversVisibleToUser(servers, userId) {
+function userServers(userId) {
+  const servers = db.prepare(`
+    SELECT DISTINCT s.* FROM servers s
+    JOIN server_labels sl ON s.id = sl.server_id
+    JOIN labels l ON sl.label_id = l.id
+    JOIN label_groups lg ON l.id = lg.label_id
+    JOIN user_groups ug ON lg.group_id = ug.group_id
+    WHERE ug.user_id = ?
+    ORDER BY s.hostname COLLATE NOCASE
+  `).all(userId);
   const groupNames = db.prepare(`
     SELECT g.name FROM groups g
     JOIN user_groups ug ON g.id = ug.group_id
@@ -1274,46 +1377,36 @@ function serversVisibleToUser(servers, userId) {
     if (policy && policy.allowed_users.includes(email)) kept.push(s);
   }
   kept.sort((a, b) => a.hostname.localeCompare(b.hostname, undefined, { sensitivity: 'base' }));
-
-  return kept.map(withDeployState);
+  return kept;
 }
 
-// The extra fields every access view adds on top of a raw server row.
-function withDeployState(s) {
-  const expectedHash = computeServerKeysHash(s);
-  return {
-    ...s,
-    expected_keys_hash: expectedHash,
-    is_up_to_date: s.deployed_keys_hash === expectedHash,
-    restricted: !!restricted.policyFor(s.hostname)
-  };
+// The subset of its owner's devices (ownerServers) a personal agent lands
+// on — the view-side twin of serverUserBots.
+function botServers(bot, ownerServers) {
+  if (!bot.label_scoped) return ownerServers;
+  const labelled = new Set(db.prepare(`
+    SELECT sl.server_id FROM server_labels sl
+    JOIN bot_labels bl ON bl.label_id = sl.label_id
+    WHERE bl.bot_id = ?
+  `).all(bot.id).map(r => r.server_id));
+  return ownerServers.filter(s => labelled.has(s.id));
 }
 
 // Access views
 app.get('/api/my-servers', isAuthenticated, (req, res) => {
-  const servers = db.prepare(`
-    SELECT DISTINCT s.* FROM servers s
-    JOIN server_labels sl ON s.id = sl.server_id
-    JOIN labels l ON sl.label_id = l.id
-    JOIN label_groups lg ON l.id = lg.label_id
-    JOIN user_groups ug ON lg.group_id = ug.group_id
-    WHERE ug.user_id = ?
-    ORDER BY s.hostname COLLATE NOCASE
-  `).all(req.user.id);
-  res.json(serversVisibleToUser(servers, req.user.id));
+  res.json(userServers(req.user.id).map(withDeployState));
 });
 
 app.get('/api/user-servers/:userId', isAdmin, (req, res) => {
-  const servers = db.prepare(`
-    SELECT DISTINCT s.* FROM servers s
-    JOIN server_labels sl ON s.id = sl.server_id
-    JOIN labels l ON sl.label_id = l.id
-    JOIN label_groups lg ON l.id = lg.label_id
-    JOIN user_groups ug ON lg.group_id = ug.group_id
-    WHERE ug.user_id = ?
-    ORDER BY s.hostname COLLATE NOCASE
-  `).all(req.params.userId);
-  res.json(serversVisibleToUser(servers, req.params.userId));
+  res.json(userServers(req.params.userId).map(withDeployState));
+});
+
+// Devices a PERSONAL agent reaches: its owner's, narrowed to its labels
+// when label-scoped.
+app.get('/api/bot-servers/:id', isAdmin, (req, res) => {
+  const bot = db.prepare('SELECT id, user_id, label_scoped FROM bot_keys WHERE id = ?').get(req.params.id);
+  if (!bot) return res.status(404).json({ error: 'Agent not found' });
+  res.json(botServers(bot, userServers(bot.user_id)).map(withDeployState));
 });
 
 // Devices a TEAM agent reaches: those carrying one of its labels, minus
@@ -1374,9 +1467,9 @@ app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
         name: r.name,
         public_key: r.public_key,
         group_names: [r.group_name],
-        // A personal agent lands on every device its owner reaches, so
-        // whoever is listed here brings their bots with them.
-        bots: userBots(r)
+        // Whoever is listed here brings their personal agents with them,
+        // minus label-scoped ones this device carries none of the labels of.
+        bots: serverUserBots(server, r.id).map(b => ({ id: b.id, name: b.name, account: botAccount(r.email, b.name) }))
       });
     }
   }
@@ -1528,7 +1621,7 @@ app.get('/api/deploy-data', isDeployApi, (req, res) => {
             email: u.email,
             name: u.name,
             public_key: u.public_key,
-            bots: db.prepare('SELECT name, public_key, source_cidr FROM bot_keys WHERE user_id = ?').all(u.id).map(b => ({
+            bots: serverUserBots(server, u.id).map(b => ({
               name: b.name,
               account: botAccount(u.email, b.name),
               public_key: b.public_key,
