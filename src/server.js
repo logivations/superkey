@@ -371,10 +371,10 @@ async function syncAllUsersGroups() {
 
   console.log(`Syncing memberships for ${groupsWithEmail.length} groups...`);
 
-  // Clear all user_groups and rebuild
-  db.prepare('DELETE FROM user_groups').run();
-
-  let syncCount = 0;
+  // Fetch everything first, then swap memberships in one transaction:
+  // clearing up front left every user group-less (admins got 403s) for the
+  // whole fetch. A group whose fetch fails keeps its current members.
+  const fetched = new Map();
   for (const group of groupsWithEmail) {
     try {
       // Fetch all members of this group at once
@@ -396,18 +396,31 @@ async function syncAllUsersGroups() {
 
       console.log(`  ${group.name}: ${allMembers.length} members`);
 
-      // Match members to local users
+      // Match members to local users (CUSTOMER-type members, e.g. "all
+      // users in the domain", carry no email)
+      const userIds = new Set();
       for (const member of allMembers) {
-        const userId = userEmailToId.get(member.email.toLowerCase());
-        if (userId) {
-          db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(userId, group.id);
-          syncCount++;
-        }
+        const userId = member.email && userEmailToId.get(member.email.toLowerCase());
+        if (userId) userIds.add(userId);
       }
+      fetched.set(group.id, userIds);
     } catch (err) {
-      console.log(`  Error fetching members for ${group.google_group_email}: ${err.message}`);
+      console.log(`  Error fetching members for ${group.google_group_email}, keeping current members: ${err.message}`);
     }
   }
+
+  let syncCount = 0;
+  const clearGroup = db.prepare('DELETE FROM user_groups WHERE group_id = ?');
+  const addMember = db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)');
+  db.transaction(() => {
+    for (const [groupId, userIds] of fetched) {
+      clearGroup.run(groupId);
+      for (const userId of userIds) {
+        addMember.run(userId, groupId);
+        syncCount++;
+      }
+    }
+  })();
 
   console.log(`Sync complete: ${syncCount} memberships found`);
   return {
@@ -441,9 +454,10 @@ async function syncUserGroups(userId, userEmail, accessToken) {
     const admin = google.admin({ version: 'directory_v1', auth });
     const groupsWithEmail = db.prepare("SELECT * FROM groups WHERE google_group_email IS NOT NULL AND google_group_email != ''").all();
 
-    // Clear existing group memberships for this user
-    db.prepare('DELETE FROM user_groups WHERE user_id = ?').run(userId);
-
+    // Check every group first, then swap this user's memberships in one
+    // transaction (clearing up front made admins lose access mid-login).
+    const memberOf = [];
+    const failed = new Set();
     for (const group of groupsWithEmail) {
       try {
         const response = await admin.members.hasMember({
@@ -452,15 +466,27 @@ async function syncUserGroups(userId, userEmail, accessToken) {
         });
 
         if (response.data.isMember) {
-          db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(userId, group.id);
+          memberOf.push(group.id);
           console.log(`User ${userEmail} is member of ${group.google_group_email}`);
         }
       } catch (err) {
         if (err.code !== 404) {
+          failed.add(group.id);
           console.log(`Could not check membership for ${group.google_group_email}: ${err.message}`);
         }
       }
     }
+
+    const current = db.prepare('SELECT group_id FROM user_groups WHERE user_id = ?').all(userId).map(r => r.group_id);
+    const removeMembership = db.prepare('DELETE FROM user_groups WHERE user_id = ? AND group_id = ?');
+    const addMembership = db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)');
+    db.transaction(() => {
+      // Unchecked groups (API error) keep whatever membership they had.
+      for (const groupId of current) {
+        if (!failed.has(groupId)) removeMembership.run(userId, groupId);
+      }
+      for (const groupId of memberOf) addMembership.run(userId, groupId);
+    })();
   } catch (err) {
     console.error('Error syncing groups:', err.message);
   }
