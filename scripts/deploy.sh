@@ -203,11 +203,12 @@ process_server() {
         # Bot accounts owned by this user
         while read -r bot; do
             [ -z "$bot" ] && continue
-            local BACCT BKEY BOPTS BNAME
+            local BACCT BKEY BOPTS BNAME BGROUPS
             BACCT=$(echo "$bot" | jq -r '.account')
             BKEY=$(echo "$bot" | jq -r '.public_key // ""')
             BOPTS=$(echo "$bot" | jq -r '.key_options // "restrict,pty"')
             BNAME=$(echo "$bot" | jq -r '.name')
+            BGROUPS=$(echo "$bot" | jq -r '.extra_groups // ""')
 
             if [ -z "$BKEY" ]; then
                 continue
@@ -219,7 +220,7 @@ process_server() {
             fi
 
             USER_CALLS+=$(printf 'setup_bot %q %q %q %q %q || OVERALL_STATUS=1\n' \
-                "$BACCT" "$BNAME" "$BKEY" "$BOPTS" "")
+                "$BACCT" "$BNAME" "$BKEY" "$BOPTS" "$BGROUPS")
             USER_CALLS+=$'\n'
         done < <(echo "$user" | jq -c '.bots[]?')
     done < <(echo "$server" | jq -c '.users[]')
@@ -493,10 +494,10 @@ setup_bot() {
 
     # Bots join the superkey marker group (managed + revocable by superkey,
     # access to the shared /data dir) plus adm/systemd-journal for READ-ONLY
-    # access to the full system journal. PERSONAL bots are deliberately NOT
-    # in logi/docker (no scoped sudo, no docker=root: less privileged than
-    # their owner). TEAM agents additionally get docker and superkey_agents
-    # via EXTRA_GROUPS — the latter carries the run-as-deploy-user sudoers rule
+    # access to the full system journal. PERSONAL bots are never in logi (no
+    # scoped sudo) and join docker only when their owner opted in (EXTRA_GROUPS
+    # "docker"; the owner is in docker on these hosts anyway). TEAM agents
+    # always get docker and superkey_agents via EXTRA_GROUPS — the latter carries the run-as-deploy-user sudoers rule
     # installed above, so they can drive the deploy tooling (checkout_*,
     # update_w2mo, run_docker.sh) the way a human would instead of hand-rolling
     # docker commands. Their access is granted per label, on restricted servers
@@ -509,6 +510,15 @@ setup_bot() {
         if ! id -nG "$ACCT" | grep -qw "$g"; then
             echo "      Adding $ACCT to $g group..."
             sudo -n usermod -aG "$g" "$ACCT" || echo "      Warning: Could not add to $g group"
+        fi
+    done
+    # The privileged extras are granted per account, so they must also be
+    # taken away again (a personal bot whose owner switched docker off).
+    for g in docker superkey_agents; do
+        case " $EXTRA_GROUPS " in *" $g "*) continue ;; esac
+        if id -nG "$ACCT" | grep -qw "$g"; then
+            echo "      Removing $ACCT from $g group..."
+            sudo -n gpasswd -d "$ACCT" "$g" >/dev/null || echo "      Warning: Could not remove from $g group"
         fi
     done
 

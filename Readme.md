@@ -110,14 +110,15 @@ contradict it.
 Two kinds of automation identities, both deployed as separate Linux
 accounts (hardened `restrict,pty` keys, optional `from=` source
 restriction). Personal bots get groups `superkey, adm, systemd-journal`
-(read-only logs, no docker/sudo — less privileged than their owner); team
-agents additionally join `docker`:
+(read-only logs, no sudo), plus `docker` when the owner opts in per agent
+under **Access** (the owner is in docker on those hosts anyway); team
+agents always join `docker`:
 
 - **Personal agents** ("My Agents" tab): owned by a user, log in as
   `<user>_<name>`, and reach the devices the owner can — access is
   inherited and capped, revocable by the owner any time. Under **Access**
   the owner can limit an agent to devices carrying chosen labels (only
-  labels they hold; no labels = no access), the same model as team agents
+  labels of devices they reach; no labels = no access), the same model as team agents
   but still never beyond the owner's own reach. Unlimited is the default.
 - **Team agents** ("Team Agents" tab): shared nemo agents with no owner.
   The nemo dispatcher registers them automatically via

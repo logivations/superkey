@@ -161,13 +161,14 @@ function serverTeamAgents(server) {
 // name is what actually appears on the host, so it is computed here rather
 // than reassembled in the browser.
 function userBots(user) {
-  return db.prepare('SELECT id, name, label_scoped FROM bot_keys WHERE user_id = ? ORDER BY name')
+  return db.prepare('SELECT id, name, label_scoped, docker FROM bot_keys WHERE user_id = ? ORDER BY name')
     .all(user.id)
     .map(b => ({
       id: b.id,
       name: b.name,
       account: botAccount(user.email, b.name),
       label_scoped: !!b.label_scoped,
+      docker: !!b.docker,
       labels: botLabels(b.id)
     }));
 }
@@ -187,7 +188,7 @@ function botLabels(botId) {
 // label semantics as a team agent.
 function serverUserBots(server, userId) {
   return db.prepare(`
-    SELECT b.id, b.name, b.public_key, b.source_cidr FROM bot_keys b
+    SELECT b.id, b.name, b.public_key, b.source_cidr, b.docker FROM bot_keys b
     WHERE b.user_id = ? AND (b.label_scoped = 0 OR EXISTS (
       SELECT 1 FROM bot_labels bl
       JOIN server_labels sl ON sl.label_id = bl.label_id
@@ -205,7 +206,9 @@ function computeServerKeysHash(server) {
   const agents = serverTeamAgents(server);
   const data = [
     ...users.filter(u => u.public_key).map(u => `${u.email}:${u.public_key}`),
-    ...users.flatMap(u => serverUserBots(server, u.id).map(b => `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}`)),
+    // ':docker' only when set, so hashes of agents without it stay as they were.
+    ...users.flatMap(u => serverUserBots(server, u.id).map(b =>
+      `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}${b.docker ? ':docker' : ''}`)),
     ...agents.map(a => `agent/${a.name}:${a.public_key}:${a.source_cidr || ''}`)
   ].join('\n');
   return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
@@ -719,12 +722,13 @@ app.put('/api/me/public-key', isAuthenticated, (req, res) => {
 // already reach. A user only ever sees/edits their own bots.
 app.get('/api/me/bots', isAuthenticated, (req, res) => {
   const bots = db.prepare(
-    'SELECT id, name, public_key, source_cidr, label_scoped, created_at FROM bot_keys WHERE user_id = ? ORDER BY name'
+    'SELECT id, name, public_key, source_cidr, label_scoped, docker, created_at FROM bot_keys WHERE user_id = ? ORDER BY name'
   ).all(req.user.id);
   const mine = userServers(req.user.id);
   res.json(bots.map(b => ({
     ...b,
     label_scoped: !!b.label_scoped,
+    docker: !!b.docker,
     account: botAccount(req.user.email, b.name),
     labels: botLabels(b.id),
     device_count: botServers(b, mine).length
@@ -770,23 +774,50 @@ app.delete('/api/me/bots/:id', isAuthenticated, (req, res) => {
   res.json({ success: true });
 });
 
-// Label scoping of a personal agent. Every change here can only narrow
-// what the agent reaches (the owner's access stays the cap), so it is
-// self-service like the rest of My agents.
+// Access settings of a personal agent. Label scoping can only narrow what
+// the agent reaches (the owner's access stays the cap), and docker never
+// exceeds the owner either (every human account is in docker on the hosts
+// it reaches), so both are self-service like the rest of My agents.
 function ownBot(req, res) {
   const bot = db.prepare('SELECT id FROM bot_keys WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
   if (!bot) res.status(404).json({ error: 'Bot not found' });
   return bot;
 }
 
-app.put('/api/me/bots/:id/scope', isAuthenticated, (req, res) => {
+app.put('/api/me/bots/:id/access', isAuthenticated, (req, res) => {
   const bot = ownBot(req, res);
   if (!bot) return;
-  if (typeof req.body.labelScoped !== 'boolean') {
-    return res.status(400).json({ error: 'labelScoped must be true or false.' });
+  const { labelScoped, docker } = req.body;
+  if ((labelScoped !== undefined && typeof labelScoped !== 'boolean')
+      || (docker !== undefined && typeof docker !== 'boolean')
+      || (labelScoped === undefined && docker === undefined)) {
+    return res.status(400).json({ error: 'Send labelScoped and/or docker as true or false.' });
   }
-  db.prepare('UPDATE bot_keys SET label_scoped = ? WHERE id = ?').run(req.body.labelScoped ? 1 : 0, bot.id);
+  if (labelScoped !== undefined) {
+    db.prepare('UPDATE bot_keys SET label_scoped = ? WHERE id = ?').run(labelScoped ? 1 : 0, bot.id);
+  }
+  if (docker !== undefined) {
+    db.prepare('UPDATE bot_keys SET docker = ? WHERE id = ?').run(docker ? 1 : 0, bot.id);
+  }
   res.json({ success: true });
+});
+
+// Labels a user can scope their personal agents to: those on at least one
+// device the user reaches (group wiring or restricted-servers.json). Any
+// other label would give the agent nothing, admins included.
+function reachableLabels(userId) {
+  const ids = userServers(userId).map(s => s.id);
+  if (ids.length === 0) return [];
+  return db.prepare(`
+    SELECT DISTINCT l.id, l.name FROM labels l
+    JOIN server_labels sl ON sl.label_id = l.id
+    WHERE sl.server_id IN (${ids.map(() => '?').join(',')})
+    ORDER BY l.name
+  `).all(...ids);
+}
+
+app.get('/api/me/reachable-labels', isAuthenticated, (req, res) => {
+  res.json(reachableLabels(req.user.id));
 });
 
 app.post('/api/me/bots/:id/labels/:labelId', isAuthenticated, (req, res) => {
@@ -794,8 +825,8 @@ app.post('/api/me/bots/:id/labels/:labelId', isAuthenticated, (req, res) => {
   if (!bot) return;
   const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(req.params.labelId);
   if (!label) return res.status(404).json({ error: 'Label not found' });
-  if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, label.id)) {
-    return res.status(403).json({ error: 'You can only attach labels you have access to yourself.' });
+  if (!reachableLabels(req.user.id).some(l => l.id === label.id)) {
+    return res.status(403).json({ error: 'You can only attach labels of devices you can reach yourself.' });
   }
   db.prepare('INSERT OR IGNORE INTO bot_labels (bot_id, label_id) VALUES (?, ?)').run(bot.id, label.id);
   res.json({ success: true });
@@ -1625,7 +1656,9 @@ app.get('/api/deploy-data', isDeployApi, (req, res) => {
               name: b.name,
               account: botAccount(u.email, b.name),
               public_key: b.public_key,
-              key_options: botKeyOptions(b.source_cidr)
+              key_options: botKeyOptions(b.source_cidr),
+              // Groups on top of the fixed superkey/adm/systemd-journal set.
+              extra_groups: b.docker ? 'docker' : ''
             }))
           })),
           agents: serverTeamAgents(server)

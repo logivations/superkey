@@ -85,7 +85,7 @@ db.exec(`
   -- account agent_<name> (groups superkey/adm/systemd-journal + docker +
   -- superkey_agents, the latter granting NOPASSWD run-as of the host's deploy
   -- user so the deploy tooling can be driven correctly; personal bots get the
-  -- same minus docker and superkey_agents).
+  -- same minus superkey_agents, and docker only when opted in).
   CREATE TABLE IF NOT EXISTS team_agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
@@ -127,6 +127,11 @@ try {
 // bot_labels.
 try {
   db.exec(`ALTER TABLE bot_keys ADD COLUMN label_scoped INTEGER NOT NULL DEFAULT 0`);
+} catch (e) { /* Column already exists */ }
+// 1 = the personal agent also joins docker (root-equivalent on the host; its
+// owner is in docker there anyway). Opt-in per agent.
+try {
+  db.exec(`ALTER TABLE bot_keys ADD COLUMN docker INTEGER NOT NULL DEFAULT 0`);
 } catch (e) { /* Column already exists */ }
 
 // Ensure superkey_admins group exists

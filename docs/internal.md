@@ -117,7 +117,8 @@ the user already has.
   user can never grant a bot more than they have. Self-service is therefore
   safe: the user's own scope is the hard ceiling.
 - Optionally **label-scoped** (`bot_keys.label_scoped` + `bot_labels`): the
-  owner picks labels under **Access** in My agents (only labels they hold),
+  owner picks labels under **Access** in My agents (only labels of devices
+  they reach, `/api/me/reachable-labels` — admins included),
   and the bot then lands only on the owner's servers carrying one of them —
   none attached means nowhere. Unscoped (the default, and every bot created
   before this existed) follows the owner everywhere. `serverUserBots()` is
@@ -125,8 +126,10 @@ the user already has.
 - The bot account joins the **`superkey`** marker group (managed/revocable by
   superkey, access to the shared `/data` dir) plus **`adm`/`systemd-journal`**
   for **read-only** access to the full system journal. It is **not** in
-  `logi`/`docker`, so it has **no scoped sudo and no docker=root**. A bot is
-  intentionally less privileged than its human owner.
+  `logi`, so it has **no scoped sudo**. It joins **`docker`** (root-equivalent)
+  only when the owner enables it per bot under **Access** (`bot_keys.docker`,
+  sent as `extra_groups` in deploy-data); switching it off removes the bot
+  from `docker` on the next deploy.
 - The key is installed with hardened `authorized_keys` options:
   `restrict,pty` plus `from="<cidr>"` when a source restriction is set — so a
   leaked bot key is useless off its host.
