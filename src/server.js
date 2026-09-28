@@ -1444,8 +1444,8 @@ app.get('/api/bot-servers/:id', isAdmin, (req, res) => {
 // Devices a TEAM agent reaches: those carrying one of its labels, minus
 // restricted servers whose policy withholds agents — the same filter
 // serverTeamAgents applies at deploy time, so the view cannot promise more
-// than the deploy delivers. A personal agent has no view of its own: it
-// reaches exactly its owner's devices (/api/user-servers/:userId).
+// than the deploy delivers. Personal agents use /api/bot-servers/:id (the
+// owner's devices, narrowed by its labels when label-scoped).
 app.get('/api/agent-servers/:id', isAdmin, (req, res) => {
   const agent = db.prepare('SELECT id, name FROM team_agents WHERE id = ?').get(req.params.id);
   if (!agent) return res.status(404).json({ error: 'Agent not found' });

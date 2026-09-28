@@ -11,6 +11,9 @@ SSH public key management tool with Google Workspace integration.
 - **Access Control** - Assign groups to labels to control server access
 - **Admin Views** - See who has access to what
 - **Deployment** - Automated user provisioning on remote servers
+- **Agents** - Personal and team automation accounts with hardened keys
+
+Details (deploy internals, server groups, sudoers, API): [docs/internal.md](docs/internal.md).
 
 ## Setup
 
@@ -69,6 +72,12 @@ npm run deploy:dry-run  # preview changes
 docker-compose up -d
 ```
 
+On the superkey host, a root cron runs `scripts/auto-update.sh`: it pulls
+`main` and rebuilds the app when there are new commits, so pushing to `main`
+deploys superkey itself. It also keeps the deploy runner and the daily
+database backup (`scripts/backup-db.sh`, snapshots in `data/backups/`, 30
+days) installed.
+
 ## Access Model
 
 - Users belong to **groups** (synced from Google Workspace)
@@ -115,13 +124,13 @@ deploy user) when the owner enables **Root access** per agent under
 **Access** (the owner is in docker/logi on those hosts anyway); team
 agents always join both:
 
-- **Personal agents** ("My Agents" tab): owned by a user, log in as
+- **Personal agents** ("My agents" tab): owned by a user, log in as
   `<user>_<name>`, and reach the devices the owner can — access is
   inherited and capped, revocable by the owner any time. Under **Access**
   the owner can limit an agent to devices carrying chosen labels (only
   labels of devices they reach; no labels = no access), the same model as team agents
   but still never beyond the owner's own reach. Unlimited is the default.
-- **Team agents** ("Team Agents" tab): shared nemo agents with no owner.
+- **Team agents** ("Team agents" tab): shared nemo agents with no owner.
   The nemo dispatcher registers them automatically via
   `POST /api/agents/register` (machine auth: `AGENT_API_TOKEN` bearer
   token); they start with **no access**. Signed-in users attach **labels**

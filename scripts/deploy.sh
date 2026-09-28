@@ -9,12 +9,14 @@
 #   'superkey_ops' group (scoped NOPASSWD sudo for host troubleshooting,
 #   /etc/sudoers.d/superkey-ops; humans only)
 # - Provisions per-user bot accounts (<user>_<bot>): a separate, unprivileged
-#   account (superkey + adm/systemd-journal for read-only logs, no logi/docker)
-#   with a hardened bot key
+#   account (superkey + adm/systemd-journal for read-only logs, no logi)
+#   with a hardened bot key; docker + superkey_agents only when the owner
+#   enabled Root access for it
 # - Provisions team-agent accounts (agent_<name>): the same hardened account
 #   plus the docker and superkey_agents groups — the latter carries a NOPASSWD
 #   run-as rule for the host's deploy user (/etc/sudoers.d/superkey-agents)
-# - Revokes access for users no longer authorized (removes from superkey group members)
+# - Revokes access for accounts no longer authorized (drops their managed
+#   groups and key, locks the account)
 #
 # Servers are processed in parallel. Output from each server is prefixed
 # with its hostname. Cap concurrency with MAX_JOBS (default 8), or force

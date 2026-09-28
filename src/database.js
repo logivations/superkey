@@ -84,8 +84,8 @@ db.exec(`
   -- an agent reaches exactly the servers carrying its labels, as the
   -- account agent_<name> (groups superkey/adm/systemd-journal + docker +
   -- superkey_agents, the latter granting NOPASSWD run-as of the host's deploy
-  -- user so the deploy tooling can be driven correctly; personal bots get the
-  -- same minus superkey_agents, and docker only when opted in).
+  -- user so the deploy tooling can be driven correctly; personal bots get
+  -- docker + superkey_agents only when their owner enabled Root access).
   CREATE TABLE IF NOT EXISTS team_agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,

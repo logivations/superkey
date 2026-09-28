@@ -9,12 +9,14 @@
 1. [What is Superkey?](#what-is-superkey)
 2. [Architecture Overview](#architecture-overview)
 3. [Access Model](#access-model)
-4. [Technology Stack](#technology-stack)
-5. [Getting Started](#getting-started)
-6. [Configuration](#configuration)
-7. [Server Deployment](#server-deployment)
-8. [API Reference](#api-reference)
-9. [Troubleshooting](#troubleshooting)
+4. [Agents](#bot-keys-per-user-automation)
+5. [Technology Stack](#technology-stack)
+6. [Getting Started](#getting-started)
+7. [Configuration](#configuration)
+8. [Server Deployment](#server-deployment)
+9. [Database Backups](#database-backups)
+10. [API Reference](#api-reference)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -62,7 +64,8 @@ This means when someone joins a team in Google Workspace, they automatically get
 2. Superkey syncs their group memberships from Google Workspace
 3. Users upload their SSH public keys via the web UI
 4. Admins assign Google groups to server labels
-5. Deploy script pushes SSH keys to authorized servers
+5. The deploy runner on the superkey host pushes keys to servers whose
+   deployed state is out of date (checked every minute)
 
 ---
 
@@ -87,6 +90,10 @@ Users ──► Groups ──► Labels ──► Servers
 2. An admin assigns the `engineering` group to the `staging` label in Superkey
 3. The `staging` label is applied to servers `staging-web-1` and `staging-db-1`
 4. **Result**: Alice can SSH into `staging-web-1` and `staging-db-1`
+
+Servers matched by `restricted-servers.json` (in git) override this chain:
+only the listed groups/users are ever deployed there. See the Readme's
+*Restricted servers* section.
 
 ### Admin Access
 
@@ -138,7 +145,7 @@ the user already has.
 
 **Lifecycle**
 
-- Register/rotate/revoke from the **My Bots** tab (self-service, no admin).
+- Register/rotate/revoke from the **My agents** tab (self-service, no admin).
   Re-submitting the same bot name rotates its key.
 - Revocation is automatic: deleting a bot removes it from the per-server
   authorized list, so the next deploy locks the account and removes its key
@@ -147,6 +154,23 @@ the user already has.
   key type) to prevent `authorized_keys` option/line injection. The base64
   blob must also decode to that same key type: sshd silently skips a line it
   can't parse, so a copy/paste slip would otherwise save fine and never work.
+
+## Team Agents (shared nemo agents)
+
+- A team agent (`team_agents` table) has **no owner**. The nemo dispatcher
+  registers it through the machine API (`POST /api/agents/register`, bearer
+  `AGENT_API_TOKEN`); re-registering the same name rotates its key.
+- It starts with **no access**. Signed-in users attach **labels** to it in the
+  **Team agents** tab (`agent_labels`), and it reaches the servers carrying
+  those labels as `agent_<name>`. Users can only attach labels they hold via
+  their groups (`/api/me/labels`); admins can attach any label.
+- Restricted servers withhold team agents unless their rule sets
+  `allow_agents`. When a rule sets `allowed_users`, only those users may
+  attach or detach labels that touch the server.
+- Accounts always join `superkey`, `adm`, `systemd-journal`, `docker` and
+  `superkey_agents` (see the group table below).
+- Deleting an agent (admin in the UI, or the dispatcher via
+  `DELETE /api/agents/register/<name>`) locks its accounts on the next deploy.
 
 ## Technology Stack
 
@@ -170,6 +194,14 @@ Key tables:
 - `labels` - Server labels/tags
 - `server_labels` - Many-to-many: which labels are applied to which servers
 - `label_groups` - Many-to-many: which groups have access to which labels
+- `bot_keys` - Personal agents (owner, key, `source_cidr`, `label_scoped`,
+  `docker` = Root access)
+- `bot_labels` - Labels a label-scoped personal agent is limited to
+- `team_agents` - Shared nemo agents (no owner)
+- `agent_labels` - Labels granting a team agent access
+
+`servers.deployed_keys_hash` / `last_deployed_at` record what was last
+deployed; the runner compares that hash with what superkey would deploy now.
 
 ---
 
@@ -214,10 +246,18 @@ npm start
 | `SESSION_SECRET`            | Yes      | Random string for session encryption                     |
 | `PORT`                      | No       | Server port (default: 3000)                              |
 | `NODE_ENV`                  | No       | Environment: `development` or `production`               |
-| `DB_PATH`                   | No       | SQLite database path (default: `./superkey.db`)          |
-| `SSH_CONFIGS_PATH`          | No       | Path to SSH config files for import (default: `~/hostnames/ssh-configs`) |
+| `DB_PATH`                   | No       | SQLite database path (default: `./superkey.db`; `/data/superkey.db` in the container) |
+| `AGENT_API_TOKEN`           | No       | Bearer token for the team-agent registration API. Unset = agent API disabled |
+| `DEPLOY_API_TOKEN`          | No**     | Bearer token for `/api/deploy-data`, `/api/stale-servers`, `/api/servers/:hostname/deployed`. Unset = deploy API disabled |
+| `DEPLOY_PUBKEY`             | No**     | Machine deploy public key served at `/api/deploy-key` |
+| `SSH_CONFIGS_REPO`          | No       | Checkout of the hostnames repo (default: `~/hostnames`) |
+| `SSH_CONFIGS_PATH`          | No       | Path to SSH config files for import (default: `$SSH_CONFIGS_REPO/ssh-configs`) |
+| `SERVER_IMPORT_INTERVAL_MS` | No       | How often servers are re-imported from the hostnames repo (default: 5 min) |
+| `GROUP_SYNC_INTERVAL_MS`    | No       | How often groups are synced from Google, with a service account (default: 1 h) |
+| `RESTRICTED_SERVERS_PATH`   | No       | Path to the restricted-servers policy (default: `restricted-servers.json` in the repo) |
 
 *Service account is optional but strongly recommended for complete group sync.
+**Written into `.env` automatically by `scripts/setup-deploy-runner.sh` on the superkey host.
 
 ### Google Cloud Setup
 
@@ -247,41 +287,52 @@ Without a service account, group sync is limited to what the logged-in user's OA
 
 ## Server Deployment
 
-Deployment is a two-step process:
+Deploys run automatically from the superkey host with a dedicated machine
+key (`/root/superkey-deploy-key`). Admin personal keys are never installed on
+the `superkey-deploy` account.
 
 ### Step 1: One-Time Server Setup
 
-Each target server needs a `superkey-deploy` user that the deploy script can SSH into. This user has passwordless sudo access for managing system users.
+Each target server needs a `superkey-deploy` user with passwordless sudo that
+the deploy runner can SSH into. Any admin with sudo on the target enrolls it:
 
 ```bash
-# Generate a dedicated keypair for deployments (if you haven't already)
-ssh-keygen -t ed25519 -f ~/.ssh/superkey_deploy -C "superkey-deploy"
-
-# Run setup on each server (requires your personal sudo access)
-./scripts/setup-server.sh <hostname> ~/.ssh/superkey_deploy.pub
-
-# Example
-./scripts/setup-server.sh muc-amr.cs ~/.ssh/superkey_deploy.pub
+./scripts/setup-server.sh <hostname>                 # uses your sudo on the target
+./scripts/setup-server.sh <hostname> --ssh-user root # fresh hosts
 ```
 
 The setup script:
 1. Creates the `superkey-deploy` user
-2. Adds the public key to its authorized_keys
-3. Configures passwordless sudo for user management commands
+2. Installs the machine deploy key (fetched from `/api/deploy-key`) as its only
+   authorized key
+3. Configures passwordless sudo for it
 
-### Step 2: Deploy SSH Keys
+Then add the server with labels in the UI (or let the hostnames-repo import
+pick it up). The runner deploys to it within a minute.
 
-Once servers are prepared, deploy user access:
+### Step 2: Automatic Deploys
+
+On the superkey host, `scripts/setup-deploy-runner.sh` (run by
+`auto-update.sh`) generates the machine keypair, writes `DEPLOY_API_TOKEN` /
+`DEPLOY_PUBKEY` into `.env` and installs two systemd timers:
+
+- `superkey-deploy.timer`: every minute, `deploy-runner.sh` asks
+  `/api/stale-servers` for servers whose `deployed_keys_hash` differs from what
+  superkey would deploy now, and deploys only to those.
+- `superkey-deploy-full.timer`: a daily full run over every enrolled server,
+  catching drift the hash can't see.
+
+After a successful deploy the script reports the new hash via
+`POST /api/servers/:hostname/deployed`. **Back up `/root/superkey-deploy-key`**:
+it is the only deploy credential.
+
+Manual runs (need `DEPLOY_API_TOKEN`, and off the superkey host `DEPLOY_SSH_KEY`):
 
 ```bash
-# Preview what would change
-npm run deploy:dry-run
-
-# Deploy to all servers
-npm run deploy
-
-# Deploy to a specific server
-SUPERKEY_URL=http://localhost:3000 ./scripts/deploy.sh --server muc-amr.cs
+npm run deploy:dry-run                 # preview what would change
+npm run deploy                         # all servers
+./scripts/deploy.sh --stale            # only out-of-date servers
+./scripts/deploy.sh --server muc-amr.cs
 ```
 
 ### What the Deploy Script Does
@@ -291,9 +342,11 @@ For each server, the deploy script:
 1. **Fetches access data** from `/api/deploy-data`
 2. **Connects via SSH** as `superkey-deploy`
 3. **Revokes access** for users who are no longer authorized:
-   - Removes them from the `superkey`, `logi` and `superkey_ops` groups
+   - Removes them from the `superkey`, `logi`, `docker`, `superkey_agents`,
+     `superkey_ops`, `adm` and `systemd-journal` groups
    - Deletes their `authorized_keys`
    - Locks their account
+   (the same path applies to revoked personal and team agents)
 4. **Creates/updates users** who are authorized:
    - Creates system user (username from email: `john.doe@example.com` → `john_doe`)
    - Adds to `superkey` group (marker for Superkey-managed accounts)
@@ -302,6 +355,9 @@ For each server, the deploy script:
    - Adds to `docker` group (container management)
    - Adds to `adm` and `systemd-journal` groups, when present (read system logs)
    - Sets up SSH authorized_keys with their public key
+5. **Creates/updates agent accounts**: personal agents (`<user>_<bot>`) and
+   team agents (`agent_<name>`), with the groups described under
+   [System Groups on Servers](#system-groups-on-servers)
 
 It also installs `/etc/sudoers.d/superkey-ops`, granting the `superkey_ops`
 group **scoped passwordless sudo** for host troubleshooting (`systemctl`,
@@ -330,10 +386,11 @@ repo's command to provision it:
 entries but not rename or unlink what they do not own, because the deploy
 tooling runs `/data/monitoring` as root.
 
-For **team agents** it additionally installs `/etc/sudoers.d/superkey-agents`
+It also installs `/etc/sudoers.d/superkey-agents`
 (`%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, also `visudo`-validated)
-and puts agent accounts in `superkey_agents`. See the group table below for why;
-in short, the deploy tooling is only correct when run as the deploy user, agents
+and puts team agents, plus personal agents whose owner enabled **Root
+access**, in `superkey_agents`. See the group table below for why; in short, the
+deploy tooling is only correct when run as the deploy user, those agents
 already have `docker`, and going through `sudo -u` makes every action auditable
 (`journalctl _COMM=sudo`). Hosts without a `logi`/`administrator`/`ubuntu`
 account skip the rule with a message.
@@ -344,9 +401,28 @@ account skip the rule with a message.
 |------------|---------------------------------------------------------------------------|
 | `superkey` | Marker group. All Superkey-managed users are in this group. Used to identify which accounts can be safely managed (revoked) by Superkey without affecting other system users. |
 | `logi`     | Access group. Used for shared permissions like access to certain directories (`/data`). Carries no sudo rule of its own: the `logi` *user* is the deploy account, with its own rule owned by the deploy repo. |
+| `docker`   | Humans and team agents always; personal agents only with **Root access**. Root-equivalent in practice. |
 | `superkey_ops` | **Humans only.** Carries `/etc/sudoers.d/superkey-ops`: scoped NOPASSWD sudo (`systemctl`, `journalctl`, `dmesg`, `reboot`, `shutdown`) for host troubleshooting. Bots, agents and the deploy account are never in it. |
 | `adm` / `systemd-journal` | Standard system groups. Managed users are added to these (when present) so they can read full system/kernel logs via `journalctl`. |
-| `superkey_agents` | **Team agents only.** Carries `/etc/sudoers.d/superkey-agents`: `%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, where the deploy user is the first of `logi`/`administrator`/`ubuntu` that exists and owns a `~/deploy` checkout. It lets an agent drive the deploy tooling (`checkout_release_deepcv`, `checkout_master`, `update_w2mo`, `run_docker.sh`) as that user — which is the only way those scripts are correct, since `run_docker.sh` mounts the invoking user's home into the container. Running as the deploy user, an agent inherits whatever sudo that account has (on cameras and AMRs: `NOPASSWD: ALL`, from the deploy repo's rule). Team agents already hold `docker` (root-equivalent), so this is no new privilege tier; it is the supported path plus a sudo audit trail. Personal bots are never in this group. |
+| `superkey_agents` | **Team agents, and personal agents with Root access.** Carries `/etc/sudoers.d/superkey-agents`: `%superkey_agents ALL=(<deploy user>) NOPASSWD: ALL`, where the deploy user is the first of `logi`/`administrator`/`ubuntu` that exists and owns a `~/deploy` checkout. It lets an agent drive the deploy tooling (`checkout_release_deepcv`, `checkout_master`, `update_w2mo`, `run_docker.sh`) as that user — which is the only way those scripts are correct, since `run_docker.sh` mounts the invoking user's home into the container. Running as the deploy user, an agent inherits whatever sudo that account has (on cameras and AMRs: `NOPASSWD: ALL`, from the deploy repo's rule). Every member also holds `docker` (root-equivalent), so this is no new privilege tier; it is the supported path plus a sudo audit trail. Personal agents join it (together with `docker`) only when their owner enables **Root access** under My agents > Access, and leave both on the next deploy when it is switched off. |
+
+---
+
+## Database Backups
+
+`scripts/backup-db.sh` snapshots the SQLite database daily at 03:15. It uses
+SQLite's online backup API inside the running app container (the host has no
+`sqlite3` CLI), so the copy stays consistent while the app writes. Snapshots
+land in `data/backups/superkey-<stamp>.db.gz` on the superkey host; anything
+older than 30 days is pruned (`SUPERKEY_BACKUP_DIR`,
+`SUPERKEY_BACKUP_KEEP_DAYS`). `auto-update.sh` installs the cron entry
+(`/etc/cron.d/superkey-backup`) itself, and logs go to `backup.log`.
+
+To recover data, `zcat` a snapshot and read it with better-sqlite3 via
+`docker exec superkey-superkey-1 node -e …`. Match users by email, not id:
+a Google resync can recreate users with new ids. Don't copy files into the
+host's checkout outside `data/`: an untracked file there silently blocks
+auto-update's `git pull`.
 
 ---
 
@@ -371,8 +447,24 @@ All endpoints require authentication via Google SSO session unless noted.
 | `/api/me/bots`            | GET    | User    | List the current user's bot keys     |
 | `/api/me/bots`            | POST   | User    | Create/rotate a bot key (`name`, `publicKey`, optional `sourceCidr`) |
 | `/api/me/bots/:id`        | DELETE | User    | Revoke one of the current user's bots |
+| `/api/me/bots/:id/access` | PUT    | User    | Set `labelScoped` and/or `docker` (Root access) on an own bot |
+| `/api/me/reachable-labels`| GET    | User    | Labels of devices the user reaches (the bot label picker) |
+| `/api/me/bots/:id/labels/:labelId` | POST/DELETE | User | Attach/detach a scoping label on an own bot |
+| `/api/me/labels`          | GET    | User    | Labels the user may grant to team agents (all for admins) |
 | `/api/users`              | GET    | Admin   | List all users (incl. `bot_count`)   |
 | `/api/users/:id`          | GET    | Admin   | Get specific user                    |
+
+### Team Agent Endpoints
+
+| Endpoint                          | Method | Auth    | Description                          |
+|-----------------------------------|--------|---------|--------------------------------------|
+| `/api/agents/register`            | POST   | Agent API* | Register/rotate a team agent (`name`, `publicKey`, optional `sourceCidr`, `description`) |
+| `/api/agents/register/:name`      | DELETE | Agent API* | Deregister a team agent            |
+| `/api/agents`                     | GET    | User    | List team agents with their labels   |
+| `/api/agents/:agentId/labels/:labelId` | POST/DELETE | User | Attach/detach a label (only labels the user holds; admins any) |
+| `/api/agents/:id`                 | DELETE | Admin   | Delete a team agent                  |
+
+*`Authorization: Bearer $AGENT_API_TOKEN`; the API is disabled when the token is unset.
 
 ### Server Endpoints
 
@@ -382,7 +474,10 @@ All endpoints require authentication via Google SSO session unless noted.
 | `/api/servers`            | POST   | Admin   | Create a new server                  |
 | `/api/servers/:id`        | PUT    | Admin   | Update a server                      |
 | `/api/servers/:id`        | DELETE | Admin   | Delete a server                      |
-| `/api/import-servers`     | POST   | Admin   | Import servers from SSH config files |
+| `/api/servers/:serverId/labels/:labelId` | POST/DELETE | Admin | Apply/remove a label on a server |
+| `/api/servers/:id/download-setup` | GET | Admin | Manual setup package for a server (same policy as deploy-data) |
+| `/api/import-servers`     | POST   | Admin   | Import servers from SSH config files (also runs every 5 min) |
+| `/api/ssh-configs-commit-date` | GET | Admin  | Last commit date of the hostnames repo |
 
 ### Label Endpoints
 
@@ -419,15 +514,20 @@ All endpoints require authentication via Google SSO session unless noted.
 |---------------------------|--------|---------|--------------------------------------|
 | `/api/my-servers`         | GET    | User    | Servers the current user can access  |
 | `/api/user-servers/:id`   | GET    | Admin   | Servers a specific user can access   |
+| `/api/bot-servers/:id`    | GET    | Admin   | Servers a personal agent reaches     |
+| `/api/agent-servers/:id`  | GET    | Admin   | Servers a team agent reaches         |
 | `/api/server-access/:id`  | GET    | Admin   | Users who can access a specific server |
 
 ### Deployment
 
 | Endpoint                  | Method | Auth    | Description                          |
 |---------------------------|--------|---------|--------------------------------------|
-| `/api/deploy-data`        | GET    | None*   | Get all servers with authorized users (used by deploy script) |
+| `/api/deploy-data`        | GET    | Deploy API* | All servers with authorized users, their bots and team agents |
+| `/api/stale-servers`      | GET    | Deploy API* | Hostnames whose deployed keys hash is out of date |
+| `/api/servers/:hostname/deployed` | POST | Deploy API* | Record a successful deploy (`keys_hash`) |
+| `/api/deploy-key`         | GET    | None    | The machine deploy public key (`DEPLOY_PUBKEY`), used by `setup-server.sh` |
 
-*Note: `/api/deploy-data` has no auth for simplicity. In production, consider adding API key auth or network-level protection.
+*`Authorization: Bearer $DEPLOY_API_TOKEN`; the API is disabled when the token is unset.
 
 ---
 
@@ -445,13 +545,15 @@ The service account is optional but recommended. Without it:
 ### Deploy script can't connect to a server
 
 ```
-ERROR: Cannot connect to superkey-deploy@hostname via SSH
+ERROR: Cannot connect to superkey-deploy@hostname via SSH, skipping...
 ```
 
 **Causes**:
-- `superkey-deploy` user doesn't exist → Run `./scripts/setup-server.sh`
-- SSH key not in agent → Run `ssh-add ~/.ssh/superkey_deploy`
+- Server not enrolled (`superkey-deploy` missing or without the machine key) → Run `./scripts/setup-server.sh <hostname>`
+- Manual run off the superkey host without the machine key → Set `DEPLOY_SSH_KEY`
 - Network/firewall issue → Check SSH access manually
+
+Runner logs: `journalctl -u superkey-deploy.service` on the superkey host.
 
 ### User has no access but should
 
@@ -463,14 +565,20 @@ Check the access chain:
 
 ### User still has access after removal
 
-Access is only revoked on the next deploy run. Run:
+Access is revoked on the next deploy, which the runner starts within a
+minute of the change. To force it:
 ```bash
-npm run deploy
+./scripts/deploy.sh --server <hostname>
 ```
 
 The deploy script will:
 1. Check who should have access
 2. Lock accounts and remove keys for unauthorized users
+
+### Agent lacks new groups after a change
+
+Group changes (e.g. switching Root access on) only take effect in new login
+sessions. Reconnect the agent after the next deploy.
 
 ---
 
@@ -480,11 +588,19 @@ The deploy script will:
 superkey/
 ├── src/
 │   ├── server.js      # Main Express application
-│   └── database.js    # SQLite database setup
+│   ├── database.js    # SQLite database setup and migrations
+│   └── restricted.js  # restricted-servers.json policy
 ├── public/            # Frontend static files
 ├── scripts/
-│   ├── setup-server.sh  # One-time server preparation
-│   └── deploy.sh        # Deploy SSH keys to servers
+│   ├── setup-server.sh         # One-time server enrollment
+│   ├── deploy.sh               # Deploy keys/accounts to servers
+│   ├── deploy-runner.sh        # Timer entry point (stale / --full)
+│   ├── setup-deploy-runner.sh  # Machine key, tokens, systemd timers
+│   ├── auto-update.sh          # Pull main + redeploy the app (root cron)
+│   ├── backup-db.sh            # Daily SQLite snapshot
+│   └── migrate-deploy-key.sh   # Move old servers to the machine key
+├── restricted-servers.json  # Restricted-server policy (change via commit)
+├── docker-compose.yml # App + Caddy
 ├── .env.example       # Environment variable template
 ├── package.json
 └── docs/
