@@ -343,8 +343,8 @@ fi
 # docker group, which is root-equivalent, so this adds no privilege tier: it
 # replaces hand-rolled docker calls with the supported path and puts every
 # action in sudo's log. It does NOT grant the deploy user's own
-# password-gated sudo. PERSONAL bots are deliberately excluded (they get
-# neither docker nor this group) so they stay less privileged than their owner.
+# password-gated sudo. PERSONAL bots get this group (with docker) only when
+# their owner enabled Root access for them; otherwise they have neither.
 AGENT_RUNAS=""
 AGENT_RUNAS_FALLBACK=""
 for u in logi administrator ubuntu; do
@@ -495,9 +495,9 @@ setup_bot() {
     # Bots join the superkey marker group (managed + revocable by superkey,
     # access to the shared /data dir) plus adm/systemd-journal for READ-ONLY
     # access to the full system journal. PERSONAL bots are never in logi (no
-    # scoped sudo) and join docker only when their owner opted in (EXTRA_GROUPS
-    # "docker"; the owner is in docker on these hosts anyway). TEAM agents
-    # always get docker and superkey_agents via EXTRA_GROUPS — the latter carries the run-as-deploy-user sudoers rule
+    # scoped sudo) and join docker + superkey_agents only when their owner
+    # opted in (Root access; the owner is in docker/logi there anyway). TEAM
+    # agents always get docker and superkey_agents via EXTRA_GROUPS — the latter carries the run-as-deploy-user sudoers rule
     # installed above, so they can drive the deploy tooling (checkout_*,
     # update_w2mo, run_docker.sh) the way a human would instead of hand-rolling
     # docker commands. Their access is granted per label, on restricted servers

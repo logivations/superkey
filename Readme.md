@@ -110,9 +110,10 @@ contradict it.
 Two kinds of automation identities, both deployed as separate Linux
 accounts (hardened `restrict,pty` keys, optional `from=` source
 restriction). Personal bots get groups `superkey, adm, systemd-journal`
-(read-only logs, no sudo), plus `docker` when the owner opts in per agent
-under **Access** (the owner is in docker on those hosts anyway); team
-agents always join `docker`:
+(read-only logs, no sudo), plus `docker` and `superkey_agents` (run-as the
+deploy user) when the owner enables **Root access** per agent under
+**Access** (the owner is in docker/logi on those hosts anyway); team
+agents always join both:
 
 - **Personal agents** ("My Agents" tab): owned by a user, log in as
   `<user>_<name>`, and reach the devices the owner can — access is

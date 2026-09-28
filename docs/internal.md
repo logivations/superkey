@@ -127,9 +127,11 @@ the user already has.
   superkey, access to the shared `/data` dir) plus **`adm`/`systemd-journal`**
   for **read-only** access to the full system journal. It is **not** in
   `logi`, so it has **no scoped sudo**. It joins **`docker`** (root-equivalent)
-  only when the owner enables it per bot under **Access** (`bot_keys.docker`,
+  and **`superkey_agents`** (NOPASSWD run-as the deploy user, e.g.
+  `sudo -u logi` for `~logi/deploy` — the same as team agents) only when the
+  owner enables **Root access** per bot under **Access** (`bot_keys.docker`,
   sent as `extra_groups` in deploy-data); switching it off removes the bot
-  from `docker` on the next deploy.
+  from both on the next deploy.
 - The key is installed with hardened `authorized_keys` options:
   `restrict,pty` plus `from="<cidr>"` when a source restriction is set — so a
   leaked bot key is useless off its host.

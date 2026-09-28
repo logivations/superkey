@@ -206,9 +206,9 @@ function computeServerKeysHash(server) {
   const agents = serverTeamAgents(server);
   const data = [
     ...users.filter(u => u.public_key).map(u => `${u.email}:${u.public_key}`),
-    // ':docker' only when set, so hashes of agents without it stay as they were.
+    // Suffix only when set, so hashes of agents without docker stay as they were.
     ...users.flatMap(u => serverUserBots(server, u.id).map(b =>
-      `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}${b.docker ? ':docker' : ''}`)),
+      `${u.email}/${b.name}:${b.public_key}:${b.source_cidr || ''}${b.docker ? ':docker+agents' : ''}`)),
     ...agents.map(a => `agent/${a.name}:${a.public_key}:${a.source_cidr || ''}`)
   ].join('\n');
   return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
@@ -775,9 +775,10 @@ app.delete('/api/me/bots/:id', isAuthenticated, (req, res) => {
 });
 
 // Access settings of a personal agent. Label scoping can only narrow what
-// the agent reaches (the owner's access stays the cap), and docker never
-// exceeds the owner either (every human account is in docker on the hosts
-// it reaches), so both are self-service like the rest of My agents.
+// the agent reaches (the owner's access stays the cap), and docker (plus the
+// run-as-deploy-user rule that comes with it) never exceeds the owner either:
+// every human account is in docker and logi on the hosts it reaches. So both
+// are self-service like the rest of My agents.
 function ownBot(req, res) {
   const bot = db.prepare('SELECT id FROM bot_keys WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
   if (!bot) res.status(404).json({ error: 'Bot not found' });
@@ -1658,7 +1659,10 @@ app.get('/api/deploy-data', isDeployApi, (req, res) => {
               public_key: b.public_key,
               key_options: botKeyOptions(b.source_cidr),
               // Groups on top of the fixed superkey/adm/systemd-journal set.
-              extra_groups: b.docker ? 'docker' : ''
+              // Docker comes with superkey_agents (run-as the deploy user, e.g.
+              // sudo -u logi for ~logi/deploy), exactly like a team agent:
+              // docker is root-equivalent already, so it adds no privilege tier.
+              extra_groups: b.docker ? 'docker superkey_agents' : ''
             }))
           })),
           agents: serverTeamAgents(server)
