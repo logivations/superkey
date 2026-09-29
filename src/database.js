@@ -134,6 +134,18 @@ try {
   db.exec(`ALTER TABLE bot_keys ADD COLUMN docker INTEGER NOT NULL DEFAULT 0`);
 } catch (e) { /* Column already exists */ }
 
+// Last run of the deploy runner, one row per mode ('stale' = the per-minute
+// timer, 'full' = the daily reconcile). The runner POSTs after every run so
+// the UI can show it's alive even when there was nothing to deploy.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS deploy_runs (
+    mode TEXT PRIMARY KEY,
+    started_at DATETIME,
+    finished_at DATETIME NOT NULL,
+    exit_code INTEGER NOT NULL
+  );
+`);
+
 // Ensure superkey_admins group exists
 db.prepare(`INSERT OR IGNORE INTO groups (name) VALUES ('superkey_admins')`).run();
 

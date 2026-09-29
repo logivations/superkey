@@ -1118,6 +1118,47 @@ app.get('/api/ssh-configs-commit-date', isAdmin, (req, res) => {
   }
 });
 
+// SQLite datetime('now') is UTC without a zone; make it unambiguous for the browser.
+const sqlUtc = v => v ? v.replace(' ', 'T') + 'Z' : null;
+
+// Hostnames repo + deploy runner freshness for the "Who can reach what" view.
+app.get('/api/status', isAdmin, (req, res) => {
+  const hostnames = { commit: null, subject: null, committed_at: null, pulled_at: null, fetched_at: null };
+  try {
+    const { execSync } = require('child_process');
+    const [commit, committedAt, subject] = execSync('git log -1 --format=%h%n%cI%n%s', {
+      cwd: SSH_CONFIGS_REPO, encoding: 'utf8'
+    }).trim().split('\n');
+    Object.assign(hostnames, { commit, subject, committed_at: committedAt });
+    // Last time HEAD moved on the superkey host (auto-update.sh pulls only
+    // when origin is ahead), and last time it checked origin at all.
+    const gitDir = path.join(SSH_CONFIGS_REPO, '.git');
+    const reflog = fs.readFileSync(path.join(gitDir, 'logs', 'HEAD'), 'utf8').trim().split('\n').pop();
+    const ts = reflog && reflog.match(/> (\d+) [+-]\d{4}\t/);
+    if (ts) hostnames.pulled_at = new Date(Number(ts[1]) * 1000).toISOString();
+    const fetchHead = path.join(gitDir, 'FETCH_HEAD');
+    if (fs.existsSync(fetchHead)) hostnames.fetched_at = fs.statSync(fetchHead).mtime.toISOString();
+  } catch (err) {
+    hostnames.error = err.message;
+  }
+
+  const last = db.prepare(`
+    SELECT hostname, last_deployed_at FROM servers
+    WHERE last_deployed_at IS NOT NULL ORDER BY last_deployed_at DESC LIMIT 1
+  `).get();
+  const runs = {};
+  for (const r of db.prepare('SELECT * FROM deploy_runs').all()) {
+    runs[r.mode] = { started_at: sqlUtc(r.started_at), finished_at: sqlUtc(r.finished_at), exit_code: r.exit_code };
+  }
+  res.json({
+    hostnames,
+    deploy: {
+      last: last ? { hostname: last.hostname, at: sqlUtc(last.last_deployed_at) } : null,
+      runs
+    }
+  });
+});
+
 // Server routes
 app.get('/api/servers', isAuthenticated, (req, res) => {
   const servers = db.prepare(`
@@ -1229,6 +1270,21 @@ app.post('/api/servers/:hostname/deployed', isDeployApi, (req, res) => {
   }
 });
 
+// Deploy runner check-in (scripts/deploy-runner.sh), after every run.
+app.post('/api/deploy-runs', isDeployApi, (req, res) => {
+  const { mode, started_at, exit_code } = req.body || {};
+  if (!['stale', 'full'].includes(mode) || !Number.isInteger(exit_code)) {
+    return res.status(400).json({ error: 'mode (stale|full) and integer exit_code required' });
+  }
+  db.prepare(`
+    INSERT INTO deploy_runs (mode, started_at, finished_at, exit_code)
+    VALUES (?, datetime(?, 'unixepoch'), datetime('now'), ?)
+    ON CONFLICT(mode) DO UPDATE SET started_at = excluded.started_at,
+      finished_at = excluded.finished_at, exit_code = excluded.exit_code
+  `).run(mode, Number.isInteger(started_at) ? started_at : null, exit_code);
+  res.json({ success: true });
+});
+
 // Label routes
 // Labels carry their group grants inline: the UI renders "who can reach this
 // label" in a list, and fetching that per row was one request per label.
@@ -1270,7 +1326,16 @@ app.get('/api/groups', isAuthenticated, (req, res) => {
     SELECT g.*, (SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id) AS member_count
     FROM groups g ORDER BY g.name COLLATE NOCASE
   `).all();
-  res.json(groups);
+  const members = new Map();
+  for (const m of db.prepare(`
+    SELECT ug.group_id, u.email, u.name FROM user_groups ug
+    JOIN users u ON u.id = ug.user_id
+    ORDER BY COALESCE(u.name, u.email) COLLATE NOCASE
+  `).all()) {
+    if (!members.has(m.group_id)) members.set(m.group_id, []);
+    members.get(m.group_id).push({ email: m.email, name: m.name });
+  }
+  res.json(groups.map(g => ({ ...g, members: members.get(g.id) || [] })));
 });
 
 app.post('/api/groups', isAdmin, (req, res) => {

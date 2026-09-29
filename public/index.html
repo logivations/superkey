@@ -134,6 +134,19 @@
       font: inherit; padding: 0 0 0 5px; }
     .tg button:hover { color: var(--revision); }
 
+    .members summary { cursor: pointer; font-family: var(--mono); font-size: 12px; }
+    .members ul { list-style: none; margin: 6px 0 2px; padding: 0; columns: 2 220px; column-gap: 18px; }
+    .members li { font-size: 12.5px; padding: 1px 0; break-inside: avoid; }
+    .members li .mono-sm { margin-left: 6px; }
+    .members li.hit { background: #FFF4C2; }
+
+    /* ---- sync status strip ---- */
+    .syncstrip { display: flex; flex-wrap: wrap; gap: 6px 26px; margin: -10px 0 22px;
+      font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); letter-spacing: .02em; }
+    .syncstrip .k { text-transform: uppercase; letter-spacing: .12em; font-size: 10px; font-weight: 600; margin-right: 8px; }
+    .syncstrip b { color: var(--ink); font-weight: 600; }
+    .syncstrip .bad { color: var(--revision); }
+
     /* ---- lens ---- */
     .lens { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
       border: 2px solid var(--ink); background: var(--panel); padding: 13px 16px; margin-bottom: 22px; }
@@ -465,6 +478,11 @@ cat ~/.ssh/id_nemo.pub</pre>
           aria-label="Filter the plan">
         <label class="toggle"><input type="checkbox" id="deploy-toggle"> Show deploy state</label>
       </div>
+      <div class="syncstrip" id="sync-status" aria-live="polite">
+        <span><span class="k">Hostnames repo</span><span id="st-hostnames">—</span></span>
+        <span><span class="k">Last deploy</span><span id="st-deploy">—</span></span>
+        <span><span class="k">Deploy runner</span><span id="st-runner">—</span></span>
+      </div>
 
       <div class="split">
         <div>
@@ -536,7 +554,7 @@ cat ~/.ssh/id_nemo.pub</pre>
         <div class="card-head">
           <h2>Groups</h2>
           <span class="spacer"></span>
-          <input type="search" id="groups-filter" class="filter-input" placeholder="filter by group or email…"
+          <input type="search" id="groups-filter" class="filter-input" placeholder="filter by group, email or member…"
             aria-label="Filter groups">
           <button class="btn" id="sync-groups-btn">Sync from Google</button>
         </div>
@@ -716,6 +734,19 @@ function flash(id, text, kind) {
 }
 function clearFlash(id) { const el = $(id); if (el) el.hidden = true; }
 
+/* "3 min ago"; the absolute time goes in a title tooltip. */
+function ago(iso) {
+  if (!iso) return '—';
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+function when(iso) {
+  return iso ? `<span title="${esc(new Date(iso).toLocaleString())}">${esc(ago(iso))}</span>` : '—';
+}
+
 /* Wrap an async action so a rejected request always reaches the user. */
 function guarded(messageId, fn) {
   return async function (...args) {
@@ -743,15 +774,24 @@ function kindOf(host) {
   if (h.endsWith('.cs')) return 'control';
   return 'server';
 }
-/* Hostnames read as <stem>.<role>. The tile sits under its site heading, so
-   drop the stem only when it just repeats that site (rewe.cs under "rewe" →
-   "cs"); otherwise the stem is what identifies the machine (fm-test.cs under
-   "rtdt-servers" → "fm-test", foo.logivations.com → "foo"). */
-function shortName(host, site) {
+/* Hostnames read as <stem>.<role>. When the tail is a domain rather than a
+   role (foo.logivations.com) the stem is what identifies the machine. */
+function shortName(host) {
   const dot = host.indexOf('.');
   if (dot < 0) return host;
   const stem = host.slice(0, dot), tail = host.slice(dot + 1);
-  return (!tail.includes('.') && stem.toLowerCase() === String(site).toLowerCase()) ? tail : stem;
+  return tail.includes('.') ? stem : tail;
+}
+/* Tile labels for one site: the short name, unless it repeats within the
+   site (fm-test.cs, simulation.cs under "rtdt-servers" would all read "cs") —
+   then the stem, or the full hostname if the stems collide too. */
+function tileNames(servers) {
+  const count = list => list.reduce((m, n) => m.set(n, (m.get(n) || 0) + 1), new Map());
+  const shorts = servers.map(s => shortName(s.hostname));
+  const stems = servers.map(s => s.hostname.split('.')[0]);
+  const nShort = count(shorts), nStem = count(stems);
+  return servers.map((s, i) => nShort.get(shorts[i]) === 1 ? shorts[i]
+    : nStem.get(stems[i]) === 1 ? stems[i] : s.hostname);
 }
 function siteOf(server) {
   return (server.labels && server.labels[0]) || server.hostname.split('.')[0];
@@ -778,6 +818,7 @@ function planMarkup(sites, lit, opts) {
   const interactive = !opts || opts.interactive !== false;
   return sites.map(([site, servers]) => {
     const n = lit ? servers.filter(s => lit.has(s.hostname)).length : servers.length;
+    const names = tileNames(servers);
     return `
       <section class="site ${n ? '' : 'none'}">
         <div class="site-head">
@@ -787,7 +828,7 @@ function planMarkup(sites, lit, opts) {
           ${lit ? `<span class="site-reach">${n} of ${servers.length} reachable</span>` : ''}
         </div>
         <div class="tiles">
-          ${servers.map(s => {
+          ${servers.map((s, i) => {
             const on = !lit || lit.has(s.hostname);
             const tag = interactive ? 'button' : 'span';
             return `<${tag} class="tile ${on ? 'lit' : 'unlit'} d-${deployState(s)}${
@@ -796,7 +837,7 @@ function planMarkup(sites, lit, opts) {
               title="${esc(s.hostname)}" data-host="${esc(s.hostname)}"
               data-search="${esc((s.hostname + ' ' + site + ' ' + (s.description || '') + ' ' +
                 (s.labels || []).join(' ')).toLowerCase())}">
-              <span class="kind">${esc(kindOf(s.hostname))}</span>${esc(shortName(s.hostname, site))}
+              <span class="kind">${esc(kindOf(s.hostname))}</span>${esc(names[i])}
             </${tag}>`;
           }).join('')}
         </div>
@@ -1539,14 +1580,22 @@ function labelsHeldBy(groupName) {
 }
 function renderGroups() {
   const q = $('groups-filter').value.trim().toLowerCase();
+  const memberHit = m => !!q && ((m.name || '').toLowerCase().includes(q) || m.email.toLowerCase().includes(q));
   const rows = allGroups.filter(g => !q || g.name.toLowerCase().includes(q) ||
-    (g.google_group_email || '').toLowerCase().includes(q));
+    (g.google_group_email || '').toLowerCase().includes(q) || (g.members || []).some(memberHit));
   $('groups-list').innerHTML = rows.length ? rows.map(g => {
     const held = labelsHeldBy(g.name);
+    const members = g.members || [];
+    // Open the list when the filter matched a member, so the hit is visible.
+    const open = members.some(memberHit);
     return `<tr>
       <td class="mono">${esc(g.name)}</td>
       <td class="mono">${esc(g.google_group_email || '—')}</td>
-      <td class="mono">${g.member_count == null ? '—' : g.member_count}</td>
+      <td>${members.length ? `<details class="members"${open ? ' open' : ''}>
+          <summary>${members.length} member${members.length === 1 ? '' : 's'}</summary>
+          <ul>${members.map(m => `<li${memberHit(m) ? ' class="hit"' : ''}>${esc(m.name || m.email)}${
+            m.name ? `<span class="mono-sm">${esc(m.email)}</span>` : ''}</li>`).join('')}</ul>
+        </details>` : '<span class="tg none">none</span>'}</td>
       <td>${held.length ? held.map(n => `<span class="tg">${esc(n)}</span>`).join('')
         : '<span class="tg none">none</span>'}</td>
     </tr>`;
@@ -1626,17 +1675,33 @@ async function importOnce() {
       await applyLens($('lens-select').value);
     }
   } catch (e) { /* the timer retries; nothing actionable for the user */ }
-  try {
-    const r = await api('/api/ssh-configs-commit-date');
-    $('import-status').textContent = r.date
-      ? `${allServers.length} devices · ssh-configs last changed ${new Date(r.date).toLocaleString()}`
-      : `${allServers.length} devices`;
-  } catch (e) { /* leave the previous line in place */ }
+  $('import-status').textContent = `${allServers.length} devices`;
+}
+
+/* Freshness of the inputs to what the plan shows: the hostnames repo as
+   pulled on the superkey host, and the deploy runner (systemd timer there). */
+async function loadStatus() {
+  let st;
+  try { st = await api('/api/status'); } catch (e) { return; /* keep the previous strip */ }
+  const h = st.hostnames;
+  $('st-hostnames').innerHTML = h.commit
+    ? `<b title="${esc(h.subject)}">${esc(h.commit)}</b> committed ${when(h.committed_at)}` +
+      ` · pulled ${when(h.pulled_at)} · checked ${when(h.fetched_at)}`
+    : `<span class="bad">unavailable${h.error ? ' — ' + esc(h.error) : ''}</span>`;
+  const d = st.deploy;
+  $('st-deploy').innerHTML = d.last
+    ? `<b>${esc(d.last.hostname)}</b> ${when(d.last.at)}` : 'never';
+  const run = (r, label) => r
+    ? `${label} ${when(r.finished_at)}${r.exit_code ? ' <span class="bad">(host errors)</span>' : ''}`
+    : `${label} not reported yet`;
+  $('st-runner').innerHTML = `${run(d.runs.stale, 'checked')} · ${run(d.runs.full, 'full reconcile')}`;
 }
 function startAutoImport() {
   if (autoImportTimer) return;
   importOnce();
+  loadStatus();
   autoImportTimer = setInterval(importOnce, 5 * 60 * 1000);
+  setInterval(loadStatus, 60 * 1000);
 }
 
 /* ============ wiring ============ */

@@ -34,8 +34,10 @@ if [ ! -f "$DEPLOY_SSH_KEY" ]; then
 fi
 
 MODE="--stale"
+MODE_NAME="stale"
 if [ "${1:-}" = "--full" ]; then
     MODE=""
+    MODE_NAME="full"
 fi
 
 # One runner at a time (timer ticks can outpace a slow fleet-wide deploy).
@@ -47,5 +49,14 @@ fi
 
 # Always exit 0: individual host failures (offline robots etc.) are normal
 # and land in the journal; the timer should not flap into a failed state.
-"$SCRIPT_DIR/deploy.sh" $MODE || echo "deploy.sh reported failures (see output above)"
+STARTED_AT=$(date +%s)
+"$SCRIPT_DIR/deploy.sh" $MODE
+RC=$?
+[ "$RC" -ne 0 ] && echo "deploy.sh reported failures (see output above)"
+
+# Check in so the UI can show when the runner last ran (best effort).
+curl -s -m 10 -o /dev/null -X POST \
+    -H "Authorization: Bearer $DEPLOY_API_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"mode\":\"$MODE_NAME\",\"started_at\":$STARTED_AT,\"exit_code\":$RC}" \
+    "$SUPERKEY_URL/api/deploy-runs" || true
 exit 0
