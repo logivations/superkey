@@ -743,13 +743,15 @@ function kindOf(host) {
   if (h.endsWith('.cs')) return 'control';
   return 'server';
 }
-/* Hostnames read as <stem>.<role>. When the tail is a domain rather than a
-   role (foo.logivations.com) the stem is what identifies the machine. */
-function shortName(host) {
+/* Hostnames read as <stem>.<role>. The tile sits under its site heading, so
+   drop the stem only when it just repeats that site (rewe.cs under "rewe" →
+   "cs"); otherwise the stem is what identifies the machine (fm-test.cs under
+   "rtdt-servers" → "fm-test", foo.logivations.com → "foo"). */
+function shortName(host, site) {
   const dot = host.indexOf('.');
   if (dot < 0) return host;
   const stem = host.slice(0, dot), tail = host.slice(dot + 1);
-  return tail.includes('.') ? stem : tail;
+  return (!tail.includes('.') && stem.toLowerCase() === String(site).toLowerCase()) ? tail : stem;
 }
 function siteOf(server) {
   return (server.labels && server.labels[0]) || server.hostname.split('.')[0];
@@ -794,7 +796,7 @@ function planMarkup(sites, lit, opts) {
               title="${esc(s.hostname)}" data-host="${esc(s.hostname)}"
               data-search="${esc((s.hostname + ' ' + site + ' ' + (s.description || '') + ' ' +
                 (s.labels || []).join(' ')).toLowerCase())}">
-              <span class="kind">${esc(kindOf(s.hostname))}</span>${esc(shortName(s.hostname))}
+              <span class="kind">${esc(kindOf(s.hostname))}</span>${esc(shortName(s.hostname, site))}
             </${tag}>`;
           }).join('')}
         </div>
