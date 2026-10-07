@@ -12,6 +12,7 @@ const archiver = require('archiver');
 const db = require('./database');
 const restricted = require('./restricted');
 const tokens = require('./tokens');
+const mcp = require('./mcp');
 
 // An Error carrying the HTTP status a route should answer with. Shared
 // logic (used by both the HTTP routes and the MCP tools) throws these.
@@ -1844,6 +1845,28 @@ app.get('/api/stale-servers', isDeployApi, (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// MCP endpoint (src/mcp.js): the operations above as tools for LLM clients,
+// PAT-authenticated, running as the token's owner through the same shared
+// functions as the routes.
+mcp.mount(app, {
+  emailToUsername,
+  agentAccount,
+  sqlUtc,
+  isAdminUser,
+  userGroupNames,
+  userServers,
+  withDeployState,
+  allServersWithDeployState,
+  grantableLabels,
+  grantBlockedBy,
+  restrictedServersWithLabel,
+  teamAgentsWithLabels,
+  teamAgentServers,
+  grantAgentLabel,
+  revokeAgentLabel,
+  ownBotsDetailed
 });
 
 // Serve the SPA
