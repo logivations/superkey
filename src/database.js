@@ -146,6 +146,20 @@ db.exec(`
   );
 `);
 
+// Maintainers of a team agent (emails, lowercased), sent by the nemo
+// dispatcher on registration (the agent's owner + whoever it is shared
+// with). When an agent has any, only they (and superkey admins) may change
+// its labels; an agent without maintainers keeps the original rule (anyone
+// holding the label).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_maintainers (
+    agent_id INTEGER NOT NULL,
+    email TEXT NOT NULL,
+    PRIMARY KEY (agent_id, email),
+    FOREIGN KEY (agent_id) REFERENCES team_agents(id) ON DELETE CASCADE
+  );
+`);
+
 // OAuth 2.1 authorization server for the MCP endpoint (src/oauth.js).
 // Clients self-register (RFC 7591) and are public (no secret). A user's
 // approval on the consent page yields a short-lived code, exchanged (with

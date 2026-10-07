@@ -137,7 +137,10 @@ agents always join both:
   token); they start with **no access**. Signed-in users attach **labels**
   to an agent — it can then reach the devices carrying those labels, as
   `agent_<name>`. Users can only attach labels they hold themselves
-  (admins: any label). Deleting a team agent (admin in the UI, or the
+  (admins: any label). The dispatcher also sends the agent's
+  **maintainers** (its nemo owner + whoever it is shared with); when an
+  agent has maintainers, only they (and admins) may change its labels —
+  agents without any keep the "anyone holding the label" rule. Deleting a team agent (admin in the UI, or the
   dispatcher via `DELETE /api/agents/register/<name>` when the nemo agent
   is deleted) locks its accounts on the next deploy.
 

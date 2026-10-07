@@ -102,6 +102,21 @@ function isValidSourceList(s) {
 
 const MAX_BOTS_PER_USER = 10;
 
+// Team-agent maintainers from the registration API: an array of emails,
+// normalized to lowercase. null = not sent (leave stored maintainers as
+// they are); throws httpError(400) on anything malformed.
+const MAX_MAINTAINERS = 50;
+function parseMaintainers(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > MAX_MAINTAINERS) {
+    throw httpError(400, `maintainers must be an array of at most ${MAX_MAINTAINERS} email addresses.`);
+  }
+  const emails = value.map(v => (typeof v === 'string' ? v.trim().toLowerCase() : ''));
+  const bad = emails.find(e => !/^[^\s@,;"<>]{1,64}@[a-z0-9.-]{1,253}\.[a-z]{2,}$/.test(e));
+  if (bad !== undefined) throw httpError(400, `Invalid maintainer email: ${JSON.stringify(bad)}`);
+  return [...new Set(emails)].sort();
+}
+
 // Users that will actually be DEPLOYED on a server. This is the single
 // source of truth shared by deploy-data, the keys hash, the access views
 // and the manual-setup download, so they can never disagree. For servers
@@ -885,6 +900,12 @@ app.post('/api/agents/register', isAgentApi, (req, res) => {
   if (!isValidSourceList(sourceCidr)) {
     return res.status(400).json({ error: 'Invalid source restriction (use comma-separated IPs/CIDRs).' });
   }
+  let maintainers;
+  try {
+    maintainers = parseMaintainers(req.body.maintainers);
+  } catch (err) {
+    return res.status(err.status).json({ error: err.message });
+  }
 
   db.prepare(`
     INSERT INTO team_agents (name, public_key, source_cidr, description)
@@ -897,7 +918,15 @@ app.post('/api/agents/register', isAgentApi, (req, res) => {
   `).run(name, publicKey, sourceCidr || null, description);
 
   const agent = db.prepare('SELECT id, name, created_at FROM team_agents WHERE name = ?').get(name);
-  res.json({ ...agent, account: agentAccount(agent.name) });
+  // Sent = replaces the stored list (an empty list clears it); absent = kept.
+  if (maintainers) {
+    db.transaction(() => {
+      db.prepare('DELETE FROM agent_maintainers WHERE agent_id = ?').run(agent.id);
+      const add = db.prepare('INSERT INTO agent_maintainers (agent_id, email) VALUES (?, ?)');
+      for (const email of maintainers) add.run(agent.id, email);
+    })();
+  }
+  res.json({ ...agent, account: agentAccount(agent.name), maintainers: agentMaintainers(agent.id) });
 });
 
 // Machine deregistration: the counterpart to /register, called by the nemo
@@ -908,13 +937,45 @@ app.delete('/api/agents/register/:name', isAgentApi, (req, res) => {
   if (!name) {
     return res.status(400).json({ error: 'Invalid agent name (use 1-20 chars: a-z, 0-9, _, starting with a letter).' });
   }
-  const result = db.prepare('DELETE FROM team_agents WHERE name = ?').run(name);
-  if (result.changes === 0) return res.status(404).json({ error: 'Agent not found' });
+  const agent = db.prepare('SELECT id FROM team_agents WHERE name = ?').get(name);
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+  deleteTeamAgent(agent.id);
   res.json({ success: true });
 });
 
-// All team agents with their labels (Team agents tab, MCP list_agents).
-function teamAgentsWithLabels() {
+// Foreign keys aren't enforced, so the link rows go explicitly.
+function deleteTeamAgent(agentId) {
+  return db.transaction(() => {
+    const result = db.prepare('DELETE FROM team_agents WHERE id = ?').run(agentId);
+    db.prepare('DELETE FROM agent_labels WHERE agent_id = ?').run(agentId);
+    db.prepare('DELETE FROM agent_maintainers WHERE agent_id = ?').run(agentId);
+    return result.changes > 0;
+  })();
+}
+
+function agentMaintainers(agentId) {
+  return db.prepare('SELECT email FROM agent_maintainers WHERE agent_id = ? ORDER BY email').all(agentId).map(r => r.email);
+}
+
+// Whether `user` may change a team agent's labels at all (which labels is
+// still capped by the labels they hold): admins always; otherwise anyone
+// when the agent has no maintainers recorded, else only its maintainers.
+function userMayManageAgent(user, agentId) {
+  if (isAdminUser(user.id)) return true;
+  const maintainers = agentMaintainers(agentId);
+  return maintainers.length === 0 || maintainers.includes(String(user.email || '').toLowerCase());
+}
+
+function notMaintainerError(agentId) {
+  const agent = db.prepare('SELECT name FROM team_agents WHERE id = ?').get(agentId);
+  return httpError(403,
+    `Only the maintainers of team agent "${agent ? agent.name : agentId}" ` +
+    `(${agentMaintainers(agentId).join(', ')}) or a Superkey admin can change its labels.`);
+}
+
+// All team agents with their labels and maintainers (Team agents tab, MCP
+// list_agents); with `user`, also whether that user may manage each one.
+function teamAgentsWithLabels(user) {
   const agents = db.prepare(`
     SELECT a.id, a.name, a.public_key, a.source_cidr, a.description, a.created_at
     FROM team_agents a ORDER BY a.name
@@ -927,12 +988,14 @@ function teamAgentsWithLabels() {
   return agents.map(a => ({
     ...a,
     account: agentAccount(a.name),
-    labels: labelsFor.all(a.id)
+    labels: labelsFor.all(a.id),
+    maintainers: agentMaintainers(a.id),
+    ...(user ? { can_manage: userMayManageAgent(user, a.id) } : {})
   }));
 }
 
 app.get('/api/agents', isAuthenticated, (req, res) => {
-  res.json(teamAgentsWithLabels());
+  res.json(teamAgentsWithLabels(req.user));
 });
 
 // Labels a user may grant to agents: the ones they hold via their groups
@@ -962,9 +1025,11 @@ function grantBlockedBy(user, labelId) {
 }
 
 // Attach a label to a team agent on behalf of `user` (from a session or an
-// MCP connection). The HTTP route and the MCP grant_label tool both go through here,
-// so they enforce the same rules. Throws httpError; returns whether
-// anything changed (attaching a label the agent already has is a no-op).
+// MCP connection). The HTTP route and the MCP grant_label tool both go
+// through here, so they enforce the same rules: admin, or holding the label
+// AND being a maintainer of the agent (when it has any); restricted-server
+// rules on top. Throws httpError; returns whether anything changed
+// (attaching a label the agent already has is a no-op).
 function grantAgentLabel(user, agentId, labelId) {
   if (!isAdminUser(user.id) && !userHasLabel(user.id, labelId)) {
     throw httpError(403, 'You can only grant labels you have access to yourself.');
@@ -972,6 +1037,7 @@ function grantAgentLabel(user, agentId, labelId) {
   const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(agentId);
   const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(labelId);
   if (!agent || !label) throw httpError(404, 'Agent or label not found');
+  if (!userMayManageAgent(user, agent.id)) throw notMaintainerError(agent.id);
   const blocked = grantBlockedBy(user, label.id);
   if (blocked.length > 0) {
     throw httpError(403,
@@ -987,6 +1053,8 @@ function revokeAgentLabel(user, agentId, labelId) {
   if (!isAdminUser(user.id) && !userHasLabel(user.id, labelId)) {
     throw httpError(403, 'You can only remove labels you have access to yourself.');
   }
+  const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(agentId);
+  if (agent && !userMayManageAgent(user, agent.id)) throw notMaintainerError(agent.id);
   // Removing is narrowing, so only the allowed_users exclusivity applies
   // (cleanup on allow_agents=false servers must stay possible).
   const blocked = restrictedServersWithLabel(labelId)
@@ -1020,8 +1088,7 @@ app.delete('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) =
 });
 
 app.delete('/api/agents/:id', isAdmin, (req, res) => {
-  const result = db.prepare('DELETE FROM team_agents WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Agent not found' });
+  if (!deleteTeamAgent(req.params.id)) return res.status(404).json({ error: 'Agent not found' });
   res.json({ success: true });
 });
 
@@ -1842,6 +1909,8 @@ mcp.mount(app, requireMcpAuth, {
   restrictedServersWithLabel,
   teamAgentsWithLabels,
   teamAgentServers,
+  agentMaintainers,
+  userMayManageAgent,
   grantAgentLabel,
   revokeAgentLabel,
   ownBotsDetailed

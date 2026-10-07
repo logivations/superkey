@@ -164,6 +164,14 @@ the user already has.
   **Team agents** tab (`agent_labels`), and it reaches the servers carrying
   those labels as `agent_<name>`. Users can only attach labels they hold via
   their groups (`/api/me/labels`); admins can attach any label.
+- **Maintainers** (`agent_maintainers`): the dispatcher may send
+  `maintainers: [emails]` on registration (owner + shared_with); a sent list
+  replaces the stored one (`[]` clears it), an absent one leaves it. If an
+  agent has maintainers, label changes need admin OR (label held AND email in
+  maintainers); without maintainers the label rule alone applies. Enforced in
+  `grantAgentLabel` / `revokeAgentLabel`, shared by the HTTP routes and the
+  MCP tools. `GET /api/agents` and MCP `list_agents`/`deploy_status` return
+  `maintainers` and the caller's `can_manage`.
 - Restricted servers withhold team agents unless their rule sets
   `allow_agents`. When a rule sets `allowed_users`, only those users may
   attach or detach labels that touch the server.
@@ -200,6 +208,7 @@ Key tables:
 - `bot_labels` - Labels a label-scoped personal agent is limited to
 - `team_agents` - Shared nemo agents (no owner)
 - `agent_labels` - Labels granting a team agent access
+- `agent_maintainers` - Emails allowed to change a team agent's labels
 - `oauth_clients`, `oauth_requests`, `oauth_codes`, `oauth_grants`,
   `oauth_tokens` - MCP OAuth: registered clients, pending authorizations,
   codes, grants (= connected apps) and hashed access/refresh tokens
@@ -467,10 +476,10 @@ touch the session, so a cookie sent along is ignored too.
 
 | Endpoint                          | Method | Auth    | Description                          |
 |-----------------------------------|--------|---------|--------------------------------------|
-| `/api/agents/register`            | POST   | Agent API* | Register/rotate a team agent (`name`, `publicKey`, optional `sourceCidr`, `description`) |
+| `/api/agents/register`            | POST   | Agent API* | Register/rotate a team agent (`name`, `publicKey`, optional `sourceCidr`, `description`, `maintainers` = emails; sent replaces, absent keeps) |
 | `/api/agents/register/:name`      | DELETE | Agent API* | Deregister a team agent            |
-| `/api/agents`                     | GET    | User    | List team agents with their labels   |
-| `/api/agents/:agentId/labels/:labelId` | POST/DELETE | User | Attach/detach a label (only labels the user holds; admins any) |
+| `/api/agents`                     | GET    | User    | List team agents with labels, `maintainers` and the caller's `can_manage` |
+| `/api/agents/:agentId/labels/:labelId` | POST/DELETE | User | Attach/detach a label (only labels the user holds, and only as a maintainer if the agent has any; admins any) |
 | `/api/agents/:id`                 | DELETE | Admin   | Delete a team agent                  |
 
 *`Authorization: Bearer $AGENT_API_TOKEN`; the API is disabled when the token is unset.

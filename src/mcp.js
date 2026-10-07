@@ -32,7 +32,8 @@ Servers carry labels (by default the site/config they come from, e.g. "brummer",
 People get access through Google groups wired to labels; TEAM agents (shared nemo agents,
 Linux account agent_<name>) get access when a label is attached to them.
 You act as the user who connected this app: you can only attach labels that user holds
-(admins: any), and restricted servers (restricted-servers.json) may refuse agent access entirely.
+(admins: any), only on team agents they maintain (agents with maintainers recorded), and
+restricted servers (restricted-servers.json) may refuse agent access entirely.
 Typical flow: list_agents -> list_grantable_labels -> grant_label -> deploy_status.
 ${DEPLOY_NOTE}`;
 
@@ -219,15 +220,16 @@ function buildServer(user, auth, core) {
   server.registerTool('list_agents', {
     title: 'List team agents',
     description: 'Team agents (shared nemo agents) registered in Superkey, with their Linux account (agent_<name>), ' +
-      'description and attached labels. An agent reaches exactly the servers carrying one of its labels ' +
-      '(minus restricted servers that refuse agents).',
+      'description, attached labels, maintainers and can_manage (whether YOU may change its labels: admins always; ' +
+      'otherwise only its maintainers, or anyone when it has none). An agent reaches exactly the servers carrying ' +
+      'one of its labels (minus restricted servers that refuse agents).',
     inputSchema: {
       query: z.string().optional().describe('Case-insensitive filter on agent name, account or description.')
     },
     annotations: readOnly
   }, ({ query }) => run(() => {
     const q = String(query || '').trim().toLowerCase();
-    return core.teamAgentsWithLabels()
+    return core.teamAgentsWithLabels(user)
       .filter(a => !q || `${a.name} ${a.account} ${a.description || ''}`.toLowerCase().includes(q))
       .map(a => ({
         id: a.id,
@@ -235,6 +237,8 @@ function buildServer(user, auth, core) {
         account: a.account,
         description: a.description,
         labels: a.labels.map(l => l.name),
+        maintainers: a.maintainers,
+        can_manage: a.can_manage,
         source_cidr: a.source_cidr,
         created_at: core.sqlUtc(a.created_at)
       }));
@@ -248,7 +252,8 @@ function buildServer(user, auth, core) {
   server.registerTool('grant_label', {
     title: 'Grant a label to a team agent',
     description: 'Attach a label to a team agent, giving its account SSH access to every server carrying the label. ' +
-      'Same rules as the web UI: you can only grant labels you hold yourself (admins: any), and labels touching ' +
+      'Same rules as the web UI: you can only grant labels you hold yourself (admins: any), only on agents you ' +
+      'maintain (when the agent has maintainers; see list_agents can_manage), and labels touching ' +
       'restricted servers that refuse agent access for you are rejected. Idempotent (granting an attached label ' +
       'changes nothing). The keys are deployed within ~1-2 minutes; check with deploy_status.',
     inputSchema: agentLabelInput,
@@ -279,7 +284,8 @@ function buildServer(user, auth, core) {
     title: 'Revoke a label from a team agent',
     description: 'Detach a label from a team agent; its account is removed from the servers it no longer reaches on ' +
       'the next deploy (~1-2 minutes, offline servers when they come back). Same rules as the web UI: you can only ' +
-      'remove labels you hold yourself (admins: any); restricted servers with allowed_users only let those users ' +
+      'remove labels you hold yourself (admins: any), only on agents you maintain (when the agent has maintainers); ' +
+      'restricted servers with allowed_users only let those users ' +
       'manage agent access. Idempotent.',
     inputSchema: agentLabelInput,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
@@ -371,6 +377,8 @@ function buildServer(user, auth, core) {
       agent: a.name,
       account: core.agentAccount(a.name),
       agent_labels: agentLabels.map(x => x.name),
+      maintainers: core.agentMaintainers(a.id),
+      can_manage: core.userMayManageAgent(user, a.id),
       ...(l ? { label: l.name } : {}),
       summary: summarize(relevant),
       servers: hosts,

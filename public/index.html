@@ -459,10 +459,12 @@ cat ~/.ssh/id_nemo.pub</pre>
         <p class="lead">Shared nemo agents. They register themselves with no access; you grant it by attaching
           <strong>labels</strong>, and the agent then reaches every device carrying one, as
           <code>agent_&lt;name&gt;</code>. You can attach the labels you hold yourself; admins can attach any.
+          An agent with <strong>maintainers</strong> (set by nemo: its owner and whoever it is shared with) can only be
+          changed by them and by admins.
           Changes take effect on the next deploy.</p>
         <div id="agent-message" class="alert" hidden></div>
         <table class="data">
-          <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Labels</th><th></th></tr></thead>
+          <thead><tr><th>Agent</th><th>Logs in as</th><th>Key</th><th>Labels</th><th>Maintainers</th><th></th></tr></thead>
           <tbody id="team-list"></tbody>
         </table>
       </div>
@@ -717,7 +719,9 @@ cat ~/.ssh/id_nemo.pub</pre>
     <div class="modal-body">
       <p class="muted">The agent reaches every device carrying one of these labels. You can attach
         the labels you have access to yourself.</p>
-      <div class="field" style="margin-top:14px">
+      <div class="warnbox" id="am-not-maintainer" style="margin-bottom:14px" hidden>Only this agent's maintainers
+        (<span id="am-maintainers"></span>) and Superkey admins can change its labels.</div>
+      <div class="field" id="am-add-field" style="margin-top:14px">
         <label for="am-add">Attach a label</label>
         <div class="flex-row">
           <select id="am-add"></select>
@@ -1193,6 +1197,9 @@ async function loadTeamAgents() {
       <td>${a.labels.length
         ? a.labels.map(l => `<span class="tg">${esc(l.name)}</span>`).join('')
         : '<span class="tg none">no access</span>'}</td>
+      <td>${a.maintainers.length
+        ? a.maintainers.map(m => `<div class="mono-sm">${esc(m)}</div>`).join('')
+        : '<span class="muted">anyone holding the label</span>'}</td>
       <td class="actions">
         <button class="btn" data-agent-labels="${a.id}">Labels</button>
         ${me.isAdmin ? `<button class="btn quiet" data-lens-agent="agent:${a.id}">Show access</button>
@@ -1200,7 +1207,7 @@ async function loadTeamAgents() {
           data-name="${esc(a.name)}">Delete</button>` : ''}
       </td>
     </tr>`).join('')
-    : '<tr><td colspan="5" class="muted">No team agents registered yet.</td></tr>';
+    : '<tr><td colspan="6" class="muted">No team agents registered yet.</td></tr>';
 
   // Agents are lens subjects too, so a registration or a label change has to
   // reach the dropdown — and the view, if it is showing that agent.
@@ -1215,9 +1222,13 @@ function renderAgentModal(agentId) {
   if (!agent) return;
   $('agent-modal-title').textContent = 'Labels: ' + agent.name;
   $('am-add-btn').dataset.agent = agentId;
+  // Not a maintainer: read-only (the server refuses anyway).
+  $('am-not-maintainer').hidden = agent.can_manage;
+  $('am-maintainers').textContent = agent.maintainers.join(', ');
+  $('am-add-field').hidden = !agent.can_manage;
 
   const attached = new Set(agent.labels.map(l => l.id));
-  const addable = grantableLabels.filter(l => !attached.has(l.id));
+  const addable = agent.can_manage ? grantableLabels.filter(l => !attached.has(l.id)) : [];
   $('am-add').innerHTML = addable.length
     ? addable.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('')
     : '<option value="">No labels left to attach</option>';
@@ -1226,7 +1237,7 @@ function renderAgentModal(agentId) {
   const removable = new Set(grantableLabels.map(l => l.id));
   $('am-labels').innerHTML = agent.labels.length
     ? agent.labels.map(l => {
-        const may = me.isAdmin || removable.has(l.id);
+        const may = agent.can_manage && (me.isAdmin || removable.has(l.id));
         return `<span class="tg">${esc(l.name)}${may
           ? `<button data-agent-remove="${l.id}" data-agent="${agentId}"
               aria-label="Remove ${esc(l.name)}">&times;</button>` : ''}</span>`;
