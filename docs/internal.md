@@ -432,9 +432,15 @@ auto-update's `git pull`.
 ## API Reference
 
 All endpoints require authentication via Google SSO session unless noted.
-"User" and "Admin" endpoints equally accept a **personal access token**
-(`Authorization: Bearer sk_pat_...`), which authenticates as its owner: same
-`req.user`, admin status and groups as their session. PAT requests never
+A **personal access token** (`Authorization: Bearer sk_pat_...`)
+authenticates as its owner (same `req.user`, admin status and groups as their
+session) within a fixed scope, checked centrally in `tokens.patAuth`
+(`patAllowed`): `GET`/`HEAD` on any "User"/"Admin" endpoint, `POST`/`DELETE
+/api/agents/:agentId/labels/:labelId`, and `/mcp`. Every other method on
+`/api/*` — `PUT /api/me/public-key`, `/api/me/bots*` changes,
+`/api/sync-groups`, all admin mutations, and any route added later — is 403
+for a PAT ("requires a browser session"). Paths are matched like Express
+routes them (case-insensitive, trailing slash ignored). PAT requests never
 touch the session (a cookie sent along is ignored; a bad PAT is a 401, not a
 fallback to the cookie). Tokens are distinguished from the machine tokens
 (`AGENT_API_TOKEN`, `DEPLOY_API_TOKEN`) by their `sk_pat_` prefix.
@@ -542,7 +548,8 @@ fallback to the cookie). Tokens are distinguished from the machine tokens
 *`Authorization: Bearer $DEPLOY_API_TOKEN`; the API is disabled when the token is unset.
 
 "Session" = browser session only: a PAT gets 403 there, so a leaked token
-cannot mint successors.
+cannot mint successors (the same goes for every non-GET route outside the
+agent-label grant/revoke, see above).
 
 ### MCP
 

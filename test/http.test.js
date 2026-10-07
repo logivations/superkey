@@ -86,7 +86,8 @@ test('AGENT_API_TOKEN still registers team agents; a PAT does not', async () => 
   const viaPat = await call('POST', '/api/agents/register', {
     token: pat.bob, body: { name: 'evil', publicKey: KEY }
   });
-  assert.equal(viaPat.status, 401);
+  assert.equal(viaPat.status, 403); // outside the PAT scope, before isAgentApi even looks
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM team_agents WHERE name = 'evil'").get().n, 0);
 });
 
 test('DEPLOY_API_TOKEN still reads deploy data; a PAT (even an admin\'s) does not', async () => {
@@ -111,6 +112,49 @@ test('a PAT authenticates as its owner on existing session routes', async () => 
 test('isAdmin works with PATs: admin owner 200, non-admin owner 403', async () => {
   assert.equal((await call('GET', '/api/users', { token: pat.bob })).status, 200);
   assert.equal((await call('GET', '/api/users', { token: pat.alice })).status, 403);
+});
+
+// ---- PAT scope: read + agent-label only ------------------------------------
+
+test('PAT scope: SSH key and personal-agent changes need a browser session', async () => {
+  const before = db.prepare('SELECT public_key FROM users WHERE id = ?').get(alice).public_key;
+  const put = await call('PUT', '/api/me/public-key', { token: pat.alice, body: { publicKey: KEY + ' planted' } });
+  assert.equal(put.status, 403);
+  assert.match(put.json.error, /requires a browser session: API tokens are read \+ agent-label only/);
+  assert.equal(db.prepare('SELECT public_key FROM users WHERE id = ?').get(alice).public_key, before);
+
+  const bot = await call('POST', '/api/me/bots', { token: pat.alice, body: { name: 'planted', publicKey: KEY, docker: true } });
+  assert.equal(bot.status, 403);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM bot_keys WHERE name = 'planted'").get().n, 0);
+  const nemo = db.prepare("SELECT id FROM bot_keys WHERE name = 'nemo'").get().id;
+  assert.equal((await call('DELETE', `/api/me/bots/${nemo}`, { token: pat.alice })).status, 403);
+  assert.equal((await call('PUT', `/api/me/bots/${nemo}/access`, { token: pat.alice, body: { docker: true } })).status, 403);
+  assert.equal((await call('POST', '/api/sync-groups', { token: pat.alice })).status, 403);
+  // Case/slash variants are the same route to Express, and the same refusal.
+  assert.equal((await call('PUT', '/API/Me/Public-Key/', { token: pat.alice, body: { publicKey: KEY } })).status, 403);
+  // The same calls still work from a session.
+  assert.equal((await call('PUT', '/api/me/public-key', { cookie: sessionCookie(db, alice), body: { publicKey: KEY } })).status, 200);
+});
+
+test('PAT scope: an admin\'s PAT cannot mutate admin resources, but can read them', async () => {
+  const labels = () => db.prepare('SELECT COUNT(*) AS n FROM labels').get().n;
+  const n = labels();
+  const r = await call('POST', '/api/labels', { token: pat.bob, body: { name: 'planted' } });
+  assert.equal(r.status, 403);
+  assert.equal(labels(), n);
+  const brummer = f.label('brummer');
+  const team = f.group('brummer_team');
+  assert.equal((await call('DELETE', `/api/labels/${brummer}/groups/${team}`, { token: pat.bob })).status, 403);
+  assert.equal((await call('POST', '/api/sync-all-groups', { token: pat.bob })).status, 403);
+  assert.equal((await call('GET', '/api/users', { token: pat.bob })).status, 200);
+  // From a session the admin still can.
+  assert.equal((await call('POST', '/api/labels', { cookie: sessionCookie(db, bob), body: { name: 'from-session' } })).status, 200);
+});
+
+test('PAT scope: GETs are allowed (whole-fleet server list)', async () => {
+  const r = await call('GET', '/api/servers', { token: pat.alice });
+  assert.equal(r.status, 200);
+  assert.ok(r.json.some(s => s.hostname === 'kl-1'));
 });
 
 test('a session and a PAT resolve to the same user object', async () => {
@@ -191,7 +235,9 @@ test('session users create, list and revoke their tokens', async () => {
 test('PATs cannot mint, list or revoke PATs', async () => {
   const mint = await call('POST', '/api/me/tokens', { token: pat.bob, body: { name: 'successor' } });
   assert.equal(mint.status, 403);
-  assert.match(mint.json.error, /cannot manage API tokens/);
+  assert.match(mint.json.error, /requires a browser session/);
+  const list = await call('GET', '/api/me/tokens', { token: pat.bob });
+  assert.match(list.json.error, /cannot manage API tokens/);
   assert.equal((await call('GET', '/api/me/tokens', { token: pat.bob })).status, 403);
   const own = tokens.listTokens(bob)[0];
   assert.equal((await call('DELETE', `/api/me/tokens/${own.id}`, { token: pat.bob })).status, 403);

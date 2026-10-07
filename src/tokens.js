@@ -7,6 +7,9 @@
 // removed by the Google sync takes their tokens down with them. A PAT never
 // grants anything of its own.
 //
+// Scope: a PAT can read (GET), grant/revoke team-agent labels and use /mcp;
+// every other /api/* call needs a browser session (see patAllowed).
+//
 // Format: "sk_pat_" + 32 random bytes, base64url. The prefix keeps PATs
 // apart from the machine tokens (AGENT_API_TOKEN, DEPLOY_API_TOKEN), which
 // are plain hex. The token is shown once at creation; only its sha256 is
@@ -45,10 +48,29 @@ function bearerOf(req) {
 // Express routing is case-insensitive and ignores a trailing slash, so
 // match the same way: otherwise "/API/me/tokens" or "/mcp/" would reach the
 // route with the session (cookie) instead of the token deciding identity.
+function normalizedPath(req) {
+  return req.path.toLowerCase().replace(/\/+$/, '');
+}
+
 function isPatRequest(req) {
-  const p = req.path.toLowerCase().replace(/\/+$/, '');
+  const p = normalizedPath(req);
   return (p.startsWith('/api/') || p === '/mcp')
     && bearerOf(req).startsWith(PAT_PREFIX);
+}
+
+// PAT scope, fixed and deliberately narrow: reading (any GET the owner's
+// session could make), attaching/detaching team-agent labels, and the MCP
+// endpoint. Every other method on /api/* — SSH key and personal-agent
+// changes, group sync, all admin mutations, and any route added later —
+// needs a browser session, so a leaked token can neither plant credentials
+// that outlive its revocation nor reconfigure Superkey.
+const AGENT_LABEL_ROUTE = /^\/api\/agents\/[^/]+\/labels\/[^/]+$/;
+
+function patAllowed(req) {
+  const p = normalizedPath(req);
+  if (p === '/mcp') return true;
+  if (req.method === 'GET' || req.method === 'HEAD') return true;
+  return (req.method === 'POST' || req.method === 'DELETE') && AGENT_LABEL_ROUTE.test(p);
 }
 
 // Token names are free text for the owner's benefit; keep them printable
@@ -143,7 +165,8 @@ function resolveToken(plain) {
 }
 
 // Express middleware: for requests carrying "Authorization: Bearer sk_pat_…"
-// (on /api/* and /mcp) the token alone decides who the caller is. Such
+// (on /api/* and /mcp) the token alone decides who the caller is, and only
+// within the PAT scope (patAllowed) — anything else is a 403. Such
 // requests skip the session middleware entirely (see server.js), so a
 // cookie riding along can neither add to nor replace the token's identity,
 // and a bad token is a hard 401 — never a fallback to the cookie.
@@ -154,6 +177,12 @@ function patAuth(req, res, next) {
     res.set('WWW-Authenticate', 'Bearer realm="superkey", error="invalid_token"');
     return res.status(401).json({
       error: 'Invalid, expired or revoked API token. Create a new one in Superkey under "API tokens".'
+    });
+  }
+  if (!patAllowed(req)) {
+    return res.status(403).json({
+      error: `${req.method} ${req.path} requires a browser session: API tokens are read + agent-label only ` +
+        '(GET requests, granting/revoking team-agent labels, and /mcp). Sign in to the Superkey web UI for this.'
     });
   }
   req.user = resolved.user;
@@ -168,6 +197,7 @@ module.exports = {
   MAX_EXPIRY_DAYS,
   hashToken,
   isPatRequest,
+  patAllowed,
   listTokens,
   createToken,
   revokeToken,

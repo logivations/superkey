@@ -473,9 +473,10 @@ cat ~/.ssh/id_nemo.pub</pre>
       <div class="card">
         <h2>API tokens</h2>
         <p class="lead">A personal access token lets a script or an LLM client — Claude Code through Superkey's
-          MCP endpoint, for instance — use Superkey <strong>as you</strong>: exactly your access and your admin
-          rights, if any, never more. Treat it like a password. Revoking a token takes effect immediately, and
-          tokens can't create other tokens.</p>
+          MCP endpoint, for instance — use Superkey <strong>as you</strong>, but only to <strong>read</strong>
+          and to <strong>grant or revoke team-agent labels</strong>: changing your SSH key, your personal agents
+          or (for admins) anything else needs this browser session. Treat it like a password. Revoking a token
+          takes effect immediately, and tokens can't create other tokens.</p>
         <div id="token-message" class="alert" hidden></div>
         <table class="data">
           <thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>

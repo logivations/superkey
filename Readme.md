@@ -150,9 +150,14 @@ agents that reach that device and why.
 ## MCP / API tokens
 
 **Personal access tokens (PATs)** let scripts and LLM clients use Superkey
-as you: a request with `Authorization: Bearer sk_pat_...` runs exactly like
-your browser session (same groups, admin rights only if you are an admin),
-on every `/api/*` route and on the MCP endpoint. Create one in the web UI
+as you: a request with `Authorization: Bearer sk_pat_...` runs as you (same
+groups, admin rights only if you are an admin), but with a fixed, narrow
+scope — **read + agent-label only**: any `GET` under `/api/*` your session
+could make, granting/revoking team-agent labels
+(`POST`/`DELETE /api/agents/:agentId/labels/:labelId`), and the MCP
+endpoint. Everything else (your SSH key, personal agents, group sync, every
+admin change) needs a browser session and answers 403 to a token, so a
+leaked token cannot plant SSH keys that outlive its revocation. Create one in the web UI
 under **API tokens** (name + expiry of 30/90/365 days or never). The token is
 shown **once**; Superkey only keeps its hash. Revoking takes effect
 immediately. Tokens are managed from a browser session only — a token
