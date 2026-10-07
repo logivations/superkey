@@ -33,15 +33,21 @@ function generateToken() {
 }
 
 // The bearer value of a request, or '' if it has none.
+// The auth scheme is case-insensitive (RFC 7235), so "bearer sk_pat_..." is
+// a PAT too and must not slip past patAuth to the session cookie.
 function bearerOf(req) {
-  const header = req.headers.authorization || '';
-  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const m = /^bearer\s+(.*)$/i.exec(req.headers.authorization || '');
+  return m ? m[1].trim() : '';
 }
 
 // PAT auth only covers the API and the MCP endpoint. The /auth/* login flow
 // stays purely session-based whatever headers a client sends.
+// Express routing is case-insensitive and ignores a trailing slash, so
+// match the same way: otherwise "/API/me/tokens" or "/mcp/" would reach the
+// route with the session (cookie) instead of the token deciding identity.
 function isPatRequest(req) {
-  return (req.path.startsWith('/api/') || req.path === '/mcp')
+  const p = req.path.toLowerCase().replace(/\/+$/, '');
+  return (p.startsWith('/api/') || p === '/mcp')
     && bearerOf(req).startsWith(PAT_PREFIX);
 }
 

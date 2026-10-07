@@ -134,6 +134,27 @@ test('a cookie riding along with a PAT cannot change who the request runs as', a
   assert.equal(r.headers.get('set-cookie'), null, 'PAT requests never get a session cookie');
 });
 
+test('PAT detection matches Express routing: path case, trailing slash and scheme case cannot fall back to the cookie', async () => {
+  const cookie = sessionCookie(db, bob);
+  // Bad PAT on case/slash variants of a route: hard 401, not bob's session.
+  for (const path of ['/API/me', '/Api/Me/', '/api/me/']) {
+    assert.equal((await call('GET', path, { token: 'sk_pat_nope', cookie })).status, 401, path);
+  }
+  assert.equal((await call('GET', '/api/me', { auth: 'bearer sk_pat_nope', cookie })).status, 401);
+  // A valid PAT on such variants is the PAT's owner, and still cannot manage tokens.
+  const r = await call('GET', '/API/me', { auth: `bearer ${pat.alice}`, cookie });
+  assert.equal(r.json.email, 'alice.smith@example.com');
+  assert.equal((await call('POST', '/API/me/tokens', { token: pat.alice, cookie, body: { name: 'x' } })).status, 403);
+  assert.equal((await call('GET', '/api/me/tokens/', { token: pat.alice, cookie })).status, 403);
+  // /mcp/ (Express matches it to /mcp) takes the PAT too.
+  const res = await fetch(base + '/mcp/', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${pat.alice}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '0' } } })
+  });
+  assert.equal(res.status, 200);
+});
+
 test('no credentials: 401 as before', async () => {
   assert.equal((await call('GET', '/api/me')).status, 401);
 });
