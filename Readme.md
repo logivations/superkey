@@ -12,6 +12,7 @@ SSH public key management tool with Google Workspace integration.
 - **Admin Views** - See who has access to what
 - **Deployment** - Automated user provisioning on remote servers
 - **Agents** - Personal and team automation accounts with hardened keys
+- **API tokens + MCP** - Personal access tokens and an MCP endpoint for Claude Code / agents
 
 Details (deploy internals, server groups, sudoers, API): [docs/internal.md](docs/internal.md).
 
@@ -145,3 +146,42 @@ people, groups and labels: pick an agent to light up the devices it reaches.
 A team agent stays dark on restricted servers without `allow_agents` —
 exactly the hosts it is never deployed to. The per-device panel lists the
 agents that reach that device and why.
+
+## MCP / API tokens
+
+**Personal access tokens (PATs)** let scripts and LLM clients use Superkey
+as you: a request with `Authorization: Bearer sk_pat_...` runs exactly like
+your browser session (same groups, admin rights only if you are an admin),
+on every `/api/*` route and on the MCP endpoint. Create one in the web UI
+under **API tokens** (name + expiry of 30/90/365 days or never). The token is
+shown **once**; Superkey only keeps its hash. Revoking takes effect
+immediately. Tokens are managed from a browser session only — a token
+cannot create, list or revoke tokens.
+
+The **MCP endpoint** is `https://superkey.ops.logivations.com/mcp`
+(Streamable HTTP, stateless, PAT auth only). Add it to Claude Code with the
+command the UI shows after creating a token:
+
+```bash
+claude mcp add --transport http superkey https://superkey.ops.logivations.com/mcp \
+  --header "Authorization: Bearer sk_pat_..."
+```
+
+Tools (each runs as the token's owner, through the same permission checks
+as the web UI):
+
+| Tool | Arguments | What it does |
+|------|-----------|--------------|
+| `whoami` | — | Email, Linux username, admin flag, groups |
+| `search_servers` | `query?`, `label?`, `limit?` | Servers (whole fleet, as in the UI) with labels, restricted flag, whether you reach them, deploy state |
+| `list_grantable_labels` | — | Labels you may attach to team agents, with server counts, holding groups and whether a restricted server blocks the grant |
+| `list_agents` | `query?` | Team agents with account (`agent_<name>`), description and labels |
+| `grant_label` | `agent`, `label` | Attach a label to a team agent (only labels you hold; admins any; restricted servers enforced). Idempotent |
+| `revoke_label` | `agent`, `label` | Detach it. Idempotent |
+| `deploy_status` | `agent?`, `label?` | Per server whether the agent's key / the current key set is deployed: deployed / pending / never-deployed |
+| `list_my_bots` | — | Your personal agents (read-only) |
+
+`agent` and `label` take a name (agents also their account `agent_<name>`)
+or a numeric id. Deploys are automatic: the runner deploys out-of-date
+servers every minute, so `pending` normally clears within 1-2 minutes;
+offline robots stay pending until they are back.

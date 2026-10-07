@@ -178,7 +178,8 @@ the user already has.
 |--------------------|----------------------------------------------------|
 | Backend            | Node.js + Express                                  |
 | Database           | SQLite (better-sqlite3)                            |
-| Authentication     | Passport.js with Google OAuth 2.0                  |
+| Authentication     | Passport.js with Google OAuth 2.0; personal access tokens (`src/tokens.js`) |
+| MCP                | `@modelcontextprotocol/sdk`, Streamable HTTP at `/mcp` (`src/mcp.js`) |
 | Session Storage    | SQLite-backed sessions                             |
 | Google Integration | Google Admin SDK (Directory API)                   |
 | Frontend           | Static HTML/JS served from `public/`               |
@@ -199,6 +200,8 @@ Key tables:
 - `bot_labels` - Labels a label-scoped personal agent is limited to
 - `team_agents` - Shared nemo agents (no owner)
 - `agent_labels` - Labels granting a team agent access
+- `api_tokens` - Personal access tokens (owner, name, sha256 `token_hash`,
+  display `prefix`, `last_used_at`, `expires_at`, `revoked`)
 
 `servers.deployed_keys_hash` / `last_deployed_at` record what was last
 deployed; the runner compares that hash with what superkey would deploy now.
@@ -429,6 +432,12 @@ auto-update's `git pull`.
 ## API Reference
 
 All endpoints require authentication via Google SSO session unless noted.
+"User" and "Admin" endpoints equally accept a **personal access token**
+(`Authorization: Bearer sk_pat_...`), which authenticates as its owner: same
+`req.user`, admin status and groups as their session. PAT requests never
+touch the session (a cookie sent along is ignored; a bad PAT is a 401, not a
+fallback to the cookie). Tokens are distinguished from the machine tokens
+(`AGENT_API_TOKEN`, `DEPLOY_API_TOKEN`) by their `sk_pat_` prefix.
 
 ### Authentication
 
@@ -451,6 +460,9 @@ All endpoints require authentication via Google SSO session unless noted.
 | `/api/me/reachable-labels`| GET    | User    | Labels of devices the user reaches (the bot label picker) |
 | `/api/me/bots/:id/labels/:labelId` | POST/DELETE | User | Attach/detach a scoping label on an own bot |
 | `/api/me/labels`          | GET    | User    | Labels the user may grant to team agents (all for admins) |
+| `/api/me/tokens`          | GET    | Session | List own API tokens (never the token or its hash) |
+| `/api/me/tokens`          | POST   | Session | Create a token (`name`, optional `expiresInDays` 1-365); the response carries the token, once |
+| `/api/me/tokens/:id`      | DELETE | Session | Revoke an own token |
 | `/api/users`              | GET    | Admin   | List all users (incl. `bot_count`)   |
 | `/api/users/:id`          | GET    | Admin   | Get specific user                    |
 
@@ -529,6 +541,27 @@ All endpoints require authentication via Google SSO session unless noted.
 
 *`Authorization: Bearer $DEPLOY_API_TOKEN`; the API is disabled when the token is unset.
 
+"Session" = browser session only: a PAT gets 403 there, so a leaked token
+cannot mint successors.
+
+### MCP
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/mcp`   | POST   | PAT only | MCP Streamable HTTP, stateless, JSON responses; GET/DELETE answer 405 |
+
+Each POST builds a fresh MCP server bound to the token's owner. Tools:
+`whoami`, `search_servers {query?, label?, limit?}`, `list_grantable_labels`,
+`list_agents {query?}`, `grant_label {agent, label}`,
+`revoke_label {agent, label}`, `deploy_status {agent?, label?}`,
+`list_my_bots`. Their names and arguments are a contract (the nemo
+team-agent skill calls them). Grant/revoke go through the same
+`grantAgentLabel` / `revokeAgentLabel` functions as the HTTP routes, so the
+"only labels you hold" rule and the restricted-servers checks are shared.
+`deploy_status` compares each server's `deployed_keys_hash` with the hash
+superkey would deploy now (`deployed`), else `pending` (deployed before) or
+`never-deployed`.
+
 ---
 
 ## Troubleshooting
@@ -589,7 +622,10 @@ superkey/
 ├── src/
 │   ├── server.js      # Main Express application
 │   ├── database.js    # SQLite database setup and migrations
-│   └── restricted.js  # restricted-servers.json policy
+│   ├── restricted.js  # restricted-servers.json policy
+│   ├── tokens.js      # Personal access tokens (PAT auth middleware)
+│   └── mcp.js         # MCP endpoint (/mcp) and its tools
+├── test/              # node:test suite (npm test), temp SQLite DB
 ├── public/            # Frontend static files
 ├── scripts/
 │   ├── setup-server.sh         # One-time server enrollment
