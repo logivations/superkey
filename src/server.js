@@ -12,6 +12,12 @@ const archiver = require('archiver');
 const db = require('./database');
 const restricted = require('./restricted');
 
+// An Error carrying the HTTP status a route should answer with. Shared
+// logic (used by both the HTTP routes and the MCP tools) throws these.
+function httpError(status, message) {
+  return Object.assign(new Error(message), { status });
+}
+
 // Derive the Linux username superkey provisions for an email
 // (matches deploy.sh: local-part, dots -> underscores).
 function emailToUsername(email) {
@@ -720,19 +726,25 @@ app.put('/api/me/public-key', isAuthenticated, (req, res) => {
 // Bot keys (self-service): a user manages automation keys (e.g. "nemo") that
 // are deployed as separate, unprivileged accounts on the servers the user can
 // already reach. A user only ever sees/edits their own bots.
-app.get('/api/me/bots', isAuthenticated, (req, res) => {
+// A user's own personal agents with what they reach (My agents tab, MCP
+// list_my_bots).
+function ownBotsDetailed(user) {
   const bots = db.prepare(
     'SELECT id, name, public_key, source_cidr, label_scoped, docker, created_at FROM bot_keys WHERE user_id = ? ORDER BY name'
-  ).all(req.user.id);
-  const mine = userServers(req.user.id);
-  res.json(bots.map(b => ({
+  ).all(user.id);
+  const mine = userServers(user.id);
+  return bots.map(b => ({
     ...b,
     label_scoped: !!b.label_scoped,
     docker: !!b.docker,
-    account: botAccount(req.user.email, b.name),
+    account: botAccount(user.email, b.name),
     labels: botLabels(b.id),
     device_count: botServers(b, mine).length
-  })));
+  }));
+}
+
+app.get('/api/me/bots', isAuthenticated, (req, res) => {
+  res.json(ownBotsDetailed(req.user));
 });
 
 app.post('/api/me/bots', isAuthenticated, (req, res) => {
@@ -889,7 +901,8 @@ app.delete('/api/agents/register/:name', isAgentApi, (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/agents', isAuthenticated, (req, res) => {
+// All team agents with their labels (Team agents tab, MCP list_agents).
+function teamAgentsWithLabels() {
   const agents = db.prepare(`
     SELECT a.id, a.name, a.public_key, a.source_cidr, a.description, a.created_at
     FROM team_agents a ORDER BY a.name
@@ -899,64 +912,99 @@ app.get('/api/agents', isAuthenticated, (req, res) => {
     JOIN agent_labels al ON l.id = al.label_id
     WHERE al.agent_id = ? ORDER BY l.name
   `);
-  res.json(agents.map(a => ({
+  return agents.map(a => ({
     ...a,
     account: agentAccount(a.name),
     labels: labelsFor.all(a.id)
-  })));
+  }));
+}
+
+app.get('/api/agents', isAuthenticated, (req, res) => {
+  res.json(teamAgentsWithLabels());
 });
 
-// Labels the current user may grant to agents: the ones they hold via
-// their groups (all labels for admins).
-app.get('/api/me/labels', isAuthenticated, (req, res) => {
-  if (isAdminUser(req.user.id)) {
-    return res.json(db.prepare('SELECT * FROM labels ORDER BY name').all());
+// Labels a user may grant to agents: the ones they hold via their groups
+// (all labels for admins).
+function grantableLabels(userId) {
+  if (isAdminUser(userId)) {
+    return db.prepare('SELECT * FROM labels ORDER BY name').all();
   }
-  const labels = db.prepare(`
+  return db.prepare(`
     SELECT DISTINCT l.* FROM labels l
     JOIN label_groups lg ON l.id = lg.label_id
     JOIN user_groups ug ON lg.group_id = ug.group_id
     WHERE ug.user_id = ? ORDER BY l.name
-  `).all(req.user.id);
-  res.json(labels);
+  `).all(userId);
+}
+
+app.get('/api/me/labels', isAuthenticated, (req, res) => {
+  res.json(grantableLabels(req.user.id));
 });
 
-app.post('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
-  if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, req.params.labelId)) {
-    return res.status(403).json({ error: 'You can only grant labels you have access to yourself.' });
+// Restricted servers carrying a label on which `user` may NOT attach agent
+// access (allow_agents off, or allowed_users set without them — admins are
+// not exempt). Granting the label is refused while this is non-empty.
+function grantBlockedBy(user, labelId) {
+  return restrictedServersWithLabel(labelId)
+    .filter(x => !restricted.userMayManageAgents(x.policy, user.email));
+}
+
+// Attach a label to a team agent on behalf of `user` (from a session or a
+// PAT). The HTTP route and the MCP grant_label tool both go through here,
+// so they enforce the same rules. Throws httpError; returns whether
+// anything changed (attaching a label the agent already has is a no-op).
+function grantAgentLabel(user, agentId, labelId) {
+  if (!isAdminUser(user.id) && !userHasLabel(user.id, labelId)) {
+    throw httpError(403, 'You can only grant labels you have access to yourself.');
   }
-  const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(req.params.agentId);
-  const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(req.params.labelId);
-  if (!agent || !label) return res.status(404).json({ error: 'Agent or label not found' });
-  const blocked = restrictedServersWithLabel(label.id)
-    .filter(x => !restricted.userMayManageAgents(x.policy, req.user.email));
+  const agent = db.prepare('SELECT id FROM team_agents WHERE id = ?').get(agentId);
+  const label = db.prepare('SELECT id FROM labels WHERE id = ?').get(labelId);
+  if (!agent || !label) throw httpError(404, 'Agent or label not found');
+  const blocked = grantBlockedBy(user, label.id);
   if (blocked.length > 0) {
-    return res.status(403).json({
-      error: `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
-        `where you may not manage agent access (see restricted-servers.json: allow_agents / allowed_users).`
-    });
+    throw httpError(403,
+      `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
+      `where you may not manage agent access (see restricted-servers.json: allow_agents / allowed_users).`);
   }
-  db.prepare('INSERT OR IGNORE INTO agent_labels (agent_id, label_id) VALUES (?, ?)').run(agent.id, label.id);
-  res.json({ success: true });
-});
+  const result = db.prepare('INSERT OR IGNORE INTO agent_labels (agent_id, label_id) VALUES (?, ?)').run(agent.id, label.id);
+  return { changed: result.changes > 0 };
+}
 
-app.delete('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
-  if (!isAdminUser(req.user.id) && !userHasLabel(req.user.id, req.params.labelId)) {
-    return res.status(403).json({ error: 'You can only remove labels you have access to yourself.' });
+// Counterpart of grantAgentLabel (HTTP DELETE route, MCP revoke_label).
+function revokeAgentLabel(user, agentId, labelId) {
+  if (!isAdminUser(user.id) && !userHasLabel(user.id, labelId)) {
+    throw httpError(403, 'You can only remove labels you have access to yourself.');
   }
   // Removing is narrowing, so only the allowed_users exclusivity applies
   // (cleanup on allow_agents=false servers must stay possible).
-  const blocked = restrictedServersWithLabel(req.params.labelId)
+  const blocked = restrictedServersWithLabel(labelId)
     .filter(x => x.policy.allowed_users.length > 0
-      && !x.policy.allowed_users.includes((req.user.email || '').toLowerCase()));
+      && !x.policy.allowed_users.includes((user.email || '').toLowerCase()));
   if (blocked.length > 0) {
-    return res.status(403).json({
-      error: `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
-        `where only allowed_users (restricted-servers.json) may manage agent access.`
-    });
+    throw httpError(403,
+      `Label is attached to restricted server(s) ${blocked.map(x => x.server.hostname).join(', ')} ` +
+      `where only allowed_users (restricted-servers.json) may manage agent access.`);
   }
-  db.prepare('DELETE FROM agent_labels WHERE agent_id = ? AND label_id = ?').run(req.params.agentId, req.params.labelId);
-  res.json({ success: true });
+  const result = db.prepare('DELETE FROM agent_labels WHERE agent_id = ? AND label_id = ?').run(agentId, labelId);
+  return { changed: result.changes > 0 };
+}
+
+app.post('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
+  try {
+    grantAgentLabel(req.user, req.params.agentId, req.params.labelId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/agents/:agentId/labels/:labelId', isAuthenticated, (req, res) => {
+  try {
+    revokeAgentLabel(req.user, req.params.agentId, req.params.labelId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/agents/:id', isAdmin, (req, res) => {
@@ -1159,8 +1207,9 @@ app.get('/api/status', isAdmin, (req, res) => {
   });
 });
 
-// Server routes
-app.get('/api/servers', isAuthenticated, (req, res) => {
+// Every server with its label names and deploy state. Visible to any
+// signed-in user (the fleet overview; MCP search_servers uses the same).
+function allServersWithDeployState() {
   const servers = db.prepare(`
     SELECT s.*, GROUP_CONCAT(l.name) as labels
     FROM servers s
@@ -1168,17 +1217,12 @@ app.get('/api/servers', isAuthenticated, (req, res) => {
     LEFT JOIN labels l ON sl.label_id = l.id
     GROUP BY s.id
   `).all();
-  res.json(servers.map(s => {
-    const expectedHash = computeServerKeysHash(s);
-    const isUpToDate = s.deployed_keys_hash === expectedHash;
-    return {
-      ...s,
-      labels: s.labels ? s.labels.split(',') : [],
-      expected_keys_hash: expectedHash,
-      is_up_to_date: isUpToDate,
-      restricted: !!restricted.policyFor(s.hostname)
-    };
-  }));
+  return servers.map(s => withDeployState({ ...s, labels: s.labels ? s.labels.split(',') : [] }));
+}
+
+// Server routes
+app.get('/api/servers', isAuthenticated, (req, res) => {
+  res.json(allServersWithDeployState());
 });
 
 app.post('/api/servers', isAdmin, (req, res) => {
@@ -1511,20 +1555,23 @@ app.get('/api/bot-servers/:id', isAdmin, (req, res) => {
 // serverTeamAgents applies at deploy time, so the view cannot promise more
 // than the deploy delivers. Personal agents use /api/bot-servers/:id (the
 // owner's devices, narrowed by its labels when label-scoped).
-app.get('/api/agent-servers/:id', isAdmin, (req, res) => {
-  const agent = db.prepare('SELECT id, name FROM team_agents WHERE id = ?').get(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'Agent not found' });
-  const servers = db.prepare(`
+function teamAgentServers(agentId) {
+  return db.prepare(`
     SELECT DISTINCT s.* FROM servers s
     JOIN server_labels sl ON s.id = sl.server_id
     JOIN agent_labels al ON al.label_id = sl.label_id
     WHERE al.agent_id = ?
     ORDER BY s.hostname COLLATE NOCASE
-  `).all(agent.id).filter(s => {
+  `).all(agentId).filter(s => {
     const policy = restricted.policyFor(s.hostname);
     return !policy || policy.allow_agents;
   });
-  res.json(servers.map(withDeployState));
+}
+
+app.get('/api/agent-servers/:id', isAdmin, (req, res) => {
+  const agent = db.prepare('SELECT id, name FROM team_agents WHERE id = ?').get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+  res.json(teamAgentServers(agent.id).map(withDeployState));
 });
 
 app.get('/api/server-access/:serverId', isAdmin, (req, res) => {
@@ -1792,7 +1839,9 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(PORT, async () => {
+// Listen only when run directly (node src/server.js); tests require() the
+// app and bind it to a port of their own.
+if (require.main === module) app.listen(PORT, async () => {
   console.log(`Superkey server running on port ${PORT}`);
 
   scheduledServerImport();
@@ -1832,3 +1881,5 @@ app.listen(PORT, async () => {
     console.log('Note: Set GOOGLE_SERVICE_ACCOUNT_KEY and GOOGLE_ADMIN_EMAIL for full group sync');
   }
 });
+
+module.exports = { app };
