@@ -327,7 +327,7 @@
     <button class="tab" role="tab" id="t-mine"   aria-controls="v-mine"   aria-selected="true">My access</button>
     <button class="tab" role="tab" id="t-bots"   aria-controls="v-bots"   aria-selected="false">My agents</button>
     <button class="tab" role="tab" id="t-team"   aria-controls="v-team"   aria-selected="false">Team agents</button>
-    <button class="tab" role="tab" id="t-tokens" aria-controls="v-tokens" aria-selected="false">API tokens</button>
+    <button class="tab" role="tab" id="t-apps"   aria-controls="v-apps"   aria-selected="false">Connected apps</button>
     <div class="tab-sep admin-only" aria-hidden="true" hidden></div>
     <button class="tab admin-only" role="tab" id="t-access" aria-controls="v-access" aria-selected="false" hidden>Who can reach what</button>
     <button class="tab admin-only" role="tab" id="t-labels" aria-controls="v-labels" aria-selected="false" hidden>Labels</button>
@@ -469,54 +469,27 @@ cat ~/.ssh/id_nemo.pub</pre>
     </section>
 
     <!-- ---------- API TOKENS ---------- -->
-    <section class="view" id="v-tokens" role="tabpanel" aria-labelledby="t-tokens" hidden>
+    <section class="view" id="v-apps" role="tabpanel" aria-labelledby="t-apps" hidden>
       <div class="card">
-        <h2>API tokens</h2>
-        <p class="lead">A personal access token lets a script or an LLM client — Claude Code through Superkey's
-          MCP endpoint, for instance — use Superkey <strong>as you</strong>, but only to <strong>read</strong>
-          and to <strong>grant or revoke team-agent labels</strong>: changing your SSH key, your personal agents
-          or (for admins) anything else needs this browser session. Treat it like a password. Revoking a token
-          takes effect immediately, and tokens can't create other tokens.</p>
-        <div id="token-message" class="alert" hidden></div>
+        <h2>Connected apps</h2>
+        <p class="lead">Apps you allowed to use Superkey's MCP endpoint as you — Claude Code, for instance. They can
+          read servers, labels and agents and attach or detach team-agent labels you hold, nothing else. Disconnecting
+          one takes effect immediately.</p>
+        <div id="apps-message" class="alert" hidden></div>
         <table class="data">
-          <thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
-          <tbody id="tokens-list"></tbody>
+          <thead><tr><th>App</th><th>Redirect host</th><th>Connected</th><th>Last used</th><th></th></tr></thead>
+          <tbody id="apps-list"></tbody>
         </table>
       </div>
 
       <div class="card">
-        <h2>Create a token</h2>
-        <div class="field">
-          <label for="token-name">Name — what it is for</label>
-          <input type="text" id="token-name" placeholder="claude code on my laptop" maxlength="60">
-        </div>
-        <div class="field">
-          <label for="token-expiry">Expires</label>
-          <select id="token-expiry">
-            <option value="30">in 30 days</option>
-            <option value="90" selected>in 90 days</option>
-            <option value="365">in 1 year</option>
-            <option value="">never</option>
-          </select>
-        </div>
-        <button class="btn solid" id="create-token">Create token</button>
-        <div id="token-create-message" class="alert" hidden></div>
-
-        <div id="token-created" hidden>
-          <div class="warnbox">Copy the token now — this is the only time Superkey shows it.</div>
-          <div class="field" style="margin-top:14px">
-            <label>Token</label>
-            <div class="flex-row">
-              <code class="readout" id="token-value" style="flex:1"></code>
-              <button class="btn" data-copy="token-value" data-label="Copy">Copy</button>
-            </div>
-          </div>
-          <div class="field">
-            <label>Add Superkey to Claude Code</label>
-            <pre class="cmd" id="token-cmd"></pre>
-            <button class="btn" data-copy="token-cmd" data-label="Copy command" style="margin-top:8px">Copy command</button>
-          </div>
-        </div>
+        <h2>Connect Claude Code</h2>
+        <p class="lead">Add the server once, then open <code>/mcp</code> in Claude Code, pick <b>superkey</b> and
+          choose <b>Authenticate</b>. Your browser opens Superkey, you approve, and Claude Code is connected.</p>
+        <pre class="cmd" id="mcp-add-cmd"></pre>
+        <button class="btn" data-copy="mcp-add-cmd" data-label="Copy command" style="margin-top:8px">Copy command</button>
+        <div class="warnbox">Only approve a connection you started yourself. The approval page shows where the
+          authorization goes — for Claude Code that is <code>localhost</code>.</div>
       </div>
     </section>
 
@@ -1159,62 +1132,32 @@ const revokeBot = guarded('bot-message', async (id, name) => {
   refreshBotLens();
 });
 
-/* ============ api tokens ============ */
-let myTokens = [];
-let shownTokenId = null;
-
+/* ============ connected apps ============ */
 /* SQLite timestamps are UTC without a zone. */
 const sqlTime = v => v ? v.replace(' ', 'T') + 'Z' : null;
 
-function tokenExpiry(t) {
-  if (!t.expires_at) return '<span class="muted">never</span>';
-  if (t.expired) return '<span class="tg warn">expired</span>';
-  const iso = sqlTime(t.expires_at);
-  return `<span title="${esc(new Date(iso).toLocaleString())}">${esc(new Date(iso).toLocaleDateString())}</span>`;
-}
-
-async function loadTokens() {
-  try { myTokens = await api('/api/me/tokens'); }
-  catch (e) { flash('token-message', e.message, 'error'); return; }
-  $('tokens-list').innerHTML = myTokens.length ? myTokens.map(t => `
+async function loadApps() {
+  $('mcp-add-cmd').textContent = `claude mcp add --transport http superkey ${location.origin}/mcp`;
+  let apps = [];
+  try { apps = await api('/api/me/oauth-grants'); }
+  catch (e) { flash('apps-message', e.message, 'error'); return; }
+  $('apps-list').innerHTML = apps.length ? apps.map(a => `
     <tr>
-      <td>${esc(t.name)}</td>
-      <td class="mono">${esc(t.prefix)}…</td>
-      <td>${when(sqlTime(t.created_at))}</td>
-      <td>${t.last_used_at ? when(sqlTime(t.last_used_at)) : '<span class="muted">never</span>'}</td>
-      <td>${tokenExpiry(t)}</td>
-      <td class="actions"><button class="btn danger" data-revoke-token="${t.id}"
-        data-name="${esc(t.name)}">Revoke</button></td>
+      <td>${esc(a.client_name)}</td>
+      <td class="mono">${esc(a.redirect_host || '—')}</td>
+      <td>${when(sqlTime(a.created_at))}</td>
+      <td>${a.last_used_at ? when(sqlTime(a.last_used_at)) : '<span class="muted">never</span>'}</td>
+      <td class="actions"><button class="btn danger" data-revoke-app="${a.id}"
+        data-name="${esc(a.client_name)}">Disconnect</button></td>
     </tr>`).join('')
-    : '<tr><td colspan="6" class="muted">No tokens yet.</td></tr>';
+    : '<tr><td colspan="5" class="muted">No connected apps.</td></tr>';
 }
 
-const createToken = guarded('token-create-message', async () => {
-  const name = $('token-name').value.trim();
-  const days = $('token-expiry').value;
-  const t = await api('/api/me/tokens', {
-    method: 'POST', body: JSON.stringify({ name, expiresInDays: days ? Number(days) : null })
-  });
-  shownTokenId = t.id;
-  $('token-value').textContent = t.token;
-  $('token-cmd').textContent =
-    `claude mcp add --transport http superkey ${location.origin}/mcp --header "Authorization: Bearer ${t.token}"`;
-  $('token-created').hidden = false;
-  $('token-name').value = '';
-  flash('token-create-message', `Token "${t.name}" created.`);
-  loadTokens();
-});
-
-const revokeToken = guarded('token-message', async (id, name) => {
-  if (!confirm(`Revoke token "${name}"? Anything using it loses access immediately.`)) return;
-  await api('/api/me/tokens/' + id, { method: 'DELETE' });
-  if (Number(id) === shownTokenId) {
-    $('token-created').hidden = true;
-    $('token-value').textContent = $('token-cmd').textContent = '';
-    clearFlash('token-create-message');
-  }
-  flash('token-message', `Token "${name}" revoked.`);
-  loadTokens();
+const revokeApp = guarded('apps-message', async (id, name) => {
+  if (!confirm(`Disconnect "${name}"? It loses access immediately.`)) return;
+  await api('/api/me/oauth-grants/' + id, { method: 'DELETE' });
+  flash('apps-message', `"${name}" disconnected.`);
+  loadApps();
 });
 
 /* Clipboard needs a secure context; elsewhere, select the text instead. */
@@ -1834,7 +1777,6 @@ function startAutoImport() {
 /* ============ wiring ============ */
 $('save-key').addEventListener('click', saveKey);
 $('save-bot').addEventListener('click', saveBot);
-$('create-token').addEventListener('click', createToken);
 $('add-label-btn').addEventListener('click', () => {
   $('label-name').value = '';
   clearFlash('lm-message');
@@ -1869,7 +1811,7 @@ document.addEventListener('click', e => {
     '[data-agent-labels], [data-delete-agent],' +
     '[data-agent-remove], [data-device-labels], [data-device-remove], [data-download], [data-grant],' +
     '[data-delete-label], [data-grant-remove], [data-lens-user], [data-lens-agent],' +
-    '[data-revoke-token], [data-copy]');
+    '[data-revoke-app], [data-copy]');
   if (!t) return;
   const d = t.dataset;
 
@@ -1888,7 +1830,7 @@ document.addEventListener('click', e => {
   if (d.grantRemove) return void removeGrant(Number(d.label), Number(d.grantRemove));
   if (d.lensUser) return void showLens('user:' + d.lensUser);
   if (d.lensAgent) return void showLens(d.lensAgent);
-  if (d.revokeToken) return void revokeToken(d.revokeToken, d.name);
+  if (d.revokeApp) return void revokeApp(d.revokeApp, d.name);
   if (d.copy) return void copyFrom(t);
 });
 
@@ -1917,7 +1859,7 @@ async function init() {
   await renderKeyState();
   loadMyAccess();
   loadBots();
-  loadTokens();
+  loadApps();
   // Before loadAdmin: the lens lists team agents, so they have to be loaded.
   await loadTeamAgents();
   if (me.isAdmin) await loadAdmin();

@@ -178,7 +178,7 @@ the user already has.
 |--------------------|----------------------------------------------------|
 | Backend            | Node.js + Express                                  |
 | Database           | SQLite (better-sqlite3)                            |
-| Authentication     | Passport.js with Google OAuth 2.0; personal access tokens (`src/tokens.js`) |
+| Authentication     | Passport.js with Google OAuth 2.0; OAuth 2.1 authorization server for `/mcp` (`src/oauth.js`) |
 | MCP                | `@modelcontextprotocol/sdk`, Streamable HTTP at `/mcp` (`src/mcp.js`) |
 | Session Storage    | SQLite-backed sessions                             |
 | Google Integration | Google Admin SDK (Directory API)                   |
@@ -200,8 +200,9 @@ Key tables:
 - `bot_labels` - Labels a label-scoped personal agent is limited to
 - `team_agents` - Shared nemo agents (no owner)
 - `agent_labels` - Labels granting a team agent access
-- `api_tokens` - Personal access tokens (owner, name, sha256 `token_hash`,
-  display `prefix`, `last_used_at`, `expires_at`, `revoked`)
+- `oauth_clients`, `oauth_requests`, `oauth_codes`, `oauth_grants`,
+  `oauth_tokens` - MCP OAuth: registered clients, pending authorizations,
+  codes, grants (= connected apps) and hashed access/refresh tokens
 
 `servers.deployed_keys_hash` / `last_deployed_at` record what was last
 deployed; the runner compares that hash with what superkey would deploy now.
@@ -258,9 +259,11 @@ npm start
 | `SERVER_IMPORT_INTERVAL_MS` | No       | How often servers are re-imported from the hostnames repo (default: 5 min) |
 | `GROUP_SYNC_INTERVAL_MS`    | No       | How often groups are synced from Google, with a service account (default: 1 h) |
 | `RESTRICTED_SERVERS_PATH`   | No       | Path to the restricted-servers policy (default: `restricted-servers.json` in the repo) |
+| `PUBLIC_URL`                | No***    | External base URL (e.g. `https://superkey.ops.logivations.com`); OAuth issuer and `/mcp` resource are built from it |
 
 *Service account is optional but strongly recommended for complete group sync.
 **Written into `.env` automatically by `scripts/setup-deploy-runner.sh` on the superkey host.
+***Falls back to the origin of `GOOGLE_CALLBACK_URL`. Must be https (or localhost) or /mcp is disabled.
 
 ### Google Cloud Setup
 
@@ -432,18 +435,9 @@ auto-update's `git pull`.
 ## API Reference
 
 All endpoints require authentication via Google SSO session unless noted.
-A **personal access token** (`Authorization: Bearer sk_pat_...`)
-authenticates as its owner (same `req.user`, admin status and groups as their
-session) within a fixed scope, checked centrally in `tokens.patAuth`
-(`patAllowed`): `GET`/`HEAD` on any "User"/"Admin" endpoint, `POST`/`DELETE
-/api/agents/:agentId/labels/:labelId`, and `/mcp`. Every other method on
-`/api/*` — `PUT /api/me/public-key`, `/api/me/bots*` changes,
-`/api/sync-groups`, all admin mutations, and any route added later — is 403
-for a PAT ("requires a browser session"). Paths are matched like Express
-routes them (case-insensitive, trailing slash ignored). PAT requests never
-touch the session (a cookie sent along is ignored; a bad PAT is a 401, not a
-fallback to the cookie). Tokens are distinguished from the machine tokens
-(`AGENT_API_TOKEN`, `DEPLOY_API_TOKEN`) by their `sk_pat_` prefix.
+OAuth access tokens issued for the MCP endpoint (`sk_oat_...`, see
+[MCP](#mcp)) are **not** accepted on `/api/*`: such requests get 401 and never
+touch the session, so a cookie sent along is ignored too.
 
 ### Authentication
 
@@ -466,9 +460,6 @@ fallback to the cookie). Tokens are distinguished from the machine tokens
 | `/api/me/reachable-labels`| GET    | User    | Labels of devices the user reaches (the bot label picker) |
 | `/api/me/bots/:id/labels/:labelId` | POST/DELETE | User | Attach/detach a scoping label on an own bot |
 | `/api/me/labels`          | GET    | User    | Labels the user may grant to team agents (all for admins) |
-| `/api/me/tokens`          | GET    | Session | List own API tokens (never the token or its hash) |
-| `/api/me/tokens`          | POST   | Session | Create a token (`name`, optional `expiresInDays` 1-365); the response carries the token, once |
-| `/api/me/tokens/:id`      | DELETE | Session | Revoke an own token |
 | `/api/users`              | GET    | Admin   | List all users (incl. `bot_count`)   |
 | `/api/users/:id`          | GET    | Admin   | Get specific user                    |
 
@@ -547,17 +538,40 @@ fallback to the cookie). Tokens are distinguished from the machine tokens
 
 *`Authorization: Bearer $DEPLOY_API_TOKEN`; the API is disabled when the token is unset.
 
-"Session" = browser session only: a PAT gets 403 there, so a leaked token
-cannot mint successors (the same goes for every non-GET route outside the
-agent-label grant/revoke, see above).
-
 ### MCP
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/mcp`   | POST   | PAT only | MCP Streamable HTTP, stateless, JSON responses; GET/DELETE answer 405 |
+| `/mcp`   | POST   | OAuth bearer | MCP Streamable HTTP, stateless, JSON responses; GET/DELETE answer 405 |
+| `/.well-known/oauth-protected-resource[/mcp]` | GET | None | RFC 9728 metadata (resource = `<PUBLIC_URL>/mcp`) |
+| `/.well-known/oauth-authorization-server` | GET | None | RFC 8414 metadata |
+| `/register` | POST | None | RFC 7591 dynamic client registration (public clients; redirect URIs `https://` or loopback `http://` only; 20/h per IP) |
+| `/authorize` | GET/POST | Session | Code + PKCE S256; resource must be `/mcp`; parks the request and redirects to the consent page (via Google login) |
+| `/oauth/consent` | GET/POST | Session | Consent page; approval needs the CSRF token stored in the same session |
+| `/token` | POST | Client id | `authorization_code` (PKCE) and `refresh_token` (rotating) grants |
+| `/revoke` | POST | Client id | RFC 7009; revoking any token of a grant ends the grant |
+| `/api/me/oauth-grants` | GET | Session | Own connected apps (client name, redirect host, created, last used) |
+| `/api/me/oauth-grants/:id` | DELETE | Session | Disconnect one |
 
-Each POST builds a fresh MCP server bound to the token's owner. Tools:
+The authorization server (`src/oauth.js`) is built on the SDK's
+`mcpAuthRouter` / `requireBearerAuth` with a SQLite-backed provider. Issuer
+and resource URLs come from `PUBLIC_URL` (fallback: origin of
+`GOOGLE_CALLBACK_URL`, then `http://localhost:$PORT`); an http issuer other
+than localhost disables /mcp (503) instead of failing startup. Flow:
+`/authorize` stores the request (10 min) → Google login if needed
+(`returnTo` survives the login via `keepSessionInfo`) → consent page shows
+client name (self-asserted), redirect host and what is granted, as whom →
+Approve issues a 5-minute single-use code (replay revokes its grant) →
+`/token` checks PKCE, redirect URI and resource and creates the grant.
+Access tokens: 1 h, opaque, sha256-stored, bound to the `/mcp` resource.
+Refresh tokens: rotated on every use, 30-day sliding expiry; presenting an
+already-rotated one revokes the grant (both parties lose it). The user row is
+re-read on every request, so a user removed by the Google sync loses access
+at once. Client ID Metadata Documents are not supported (the SDK has no
+server-side support; DCR covers Claude Code).
+
+Each POST builds a fresh MCP server bound to the user who approved the
+connection. Tools:
 `whoami`, `search_servers {query?, label?, limit?}`, `list_grantable_labels`,
 `list_agents {query?}`, `grant_label {agent, label}`,
 `revoke_label {agent, label}`, `deploy_status {agent?, label?}`,
@@ -630,7 +644,7 @@ superkey/
 │   ├── server.js      # Main Express application
 │   ├── database.js    # SQLite database setup and migrations
 │   ├── restricted.js  # restricted-servers.json policy
-│   ├── tokens.js      # Personal access tokens (PAT auth middleware)
+│   ├── oauth.js       # OAuth 2.1 authorization server for /mcp
 │   └── mcp.js         # MCP endpoint (/mcp) and its tools
 ├── test/              # node:test suite (npm test), temp SQLite DB
 ├── public/            # Frontend static files

@@ -12,7 +12,7 @@ SSH public key management tool with Google Workspace integration.
 - **Admin Views** - See who has access to what
 - **Deployment** - Automated user provisioning on remote servers
 - **Agents** - Personal and team automation accounts with hardened keys
-- **API tokens + MCP** - Personal access tokens and an MCP endpoint for Claude Code / agents
+- **MCP endpoint** - OAuth-connected MCP server for Claude Code / agents
 
 Details (deploy internals, server groups, sudoers, API): [docs/internal.md](docs/internal.md).
 
@@ -147,33 +147,31 @@ A team agent stays dark on restricted servers without `allow_agents` —
 exactly the hosts it is never deployed to. The per-device panel lists the
 agents that reach that device and why.
 
-## MCP / API tokens
+## MCP / Connected apps
 
-**Personal access tokens (PATs)** let scripts and LLM clients use Superkey
-as you: a request with `Authorization: Bearer sk_pat_...` runs as you (same
-groups, admin rights only if you are an admin), but with a fixed, narrow
-scope — **read + agent-label only**: any `GET` under `/api/*` your session
-could make, granting/revoking team-agent labels
-(`POST`/`DELETE /api/agents/:agentId/labels/:labelId`), and the MCP
-endpoint. Everything else (your SSH key, personal agents, group sync, every
-admin change) needs a browser session and answers 403 to a token, so a
-leaked token cannot plant SSH keys that outlive its revocation. Create one in the web UI
-under **API tokens** (name + expiry of 30/90/365 days or never). The token is
-shown **once**; Superkey only keeps its hash. Revoking takes effect
-immediately. Tokens are managed from a browser session only — a token
-cannot create, list or revoke tokens.
-
-The **MCP endpoint** is `https://superkey.ops.logivations.com/mcp`
-(Streamable HTTP, stateless, PAT auth only). Add it to Claude Code with the
-command the UI shows after creating a token:
+Superkey has an **MCP endpoint** at `https://superkey.ops.logivations.com/mcp`
+(Streamable HTTP, stateless) for Claude Code and other MCP clients. It uses
+**OAuth 2.1** with Superkey as its own authorization server (MCP
+authorization spec 2025-11-25): no tokens to copy around.
 
 ```bash
-claude mcp add --transport http superkey https://superkey.ops.logivations.com/mcp \
-  --header "Authorization: Bearer sk_pat_..."
+claude mcp add --transport http superkey https://superkey.ops.logivations.com/mcp
 ```
 
-Tools (each runs as the token's owner, through the same permission checks
-as the web UI):
+Then in Claude Code: `/mcp` → **superkey** → **Authenticate**. The browser
+opens Superkey (Google sign-in if needed) and shows a **consent page** —
+which app, where the authorization goes (`localhost` for Claude Code), and
+what it may do — Approve, and Claude Code is connected. Approved apps are
+listed under **Connected apps** in the web UI, where you can disconnect them.
+
+What a connection can do is the MCP tools below, as you, through the same
+permission checks as the web UI: read, and attach/detach team-agent labels
+you hold. OAuth tokens are only accepted at `/mcp` — never on `/api/*` — so
+a connection can't touch your SSH key, your agents or admin settings.
+Access tokens live 1 h; refresh tokens rotate (30 days sliding) and a
+replayed one revokes the connection.
+
+Tools (each runs as the user who approved the connection):
 
 | Tool | Arguments | What it does |
 |------|-----------|--------------|

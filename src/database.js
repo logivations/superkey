@@ -146,26 +146,68 @@ db.exec(`
   );
 `);
 
-// Personal access tokens (PATs): a user's bearer tokens for the API and the
-// MCP endpoint (/mcp). A PAT acts exactly as its owner — same groups, same
-// admin status, re-read on every request — so it never carries access of its
-// own. Only the sha256 of the token is stored; `prefix` (the first few
-// characters) is kept so the UI can tell tokens apart. Revoked rows stay
-// for the record.
+// OAuth 2.1 authorization server for the MCP endpoint (src/oauth.js).
+// Clients self-register (RFC 7591) and are public (no secret). A user's
+// approval on the consent page yields a short-lived code, exchanged (with
+// PKCE) for a grant: one row per connected app, listed under Connected
+// apps. Tokens are stored only as sha256; expiries are unix seconds.
 db.exec(`
-  CREATE TABLE IF NOT EXISTS api_tokens (
+  CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    metadata TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Authorization requests waiting for the user (Google login + consent).
+  CREATE TABLE IF NOT EXISTS oauth_requests (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    state TEXT,
+    scopes TEXT,
+    expires_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS oauth_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    scopes TEXT,
+    expires_at INTEGER NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    grant_id INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS oauth_grants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    token_hash TEXT UNIQUE NOT NULL,
-    prefix TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scopes TEXT,
+    redirect_uri TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_used_at DATETIME,
-    expires_at DATETIME,
-    revoked INTEGER NOT NULL DEFAULT 0,
+    revoked_at DATETIME,
+    revoked_reason TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
-  CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+  CREATE INDEX IF NOT EXISTS idx_oauth_grants_user ON oauth_grants(user_id);
+
+  -- kind: 'access' | 'refresh'. A rotated refresh token keeps its row
+  -- (rotated_at set) until it expires, so a replay can be detected.
+  CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    grant_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    rotated_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_oauth_tokens_grant ON oauth_tokens(grant_id);
 `);
 
 // Ensure superkey_admins group exists

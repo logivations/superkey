@@ -1,9 +1,10 @@
 // MCP endpoint (/mcp): Superkey for LLM clients (Claude Code, nemo agents).
 //
 // Streamable HTTP, stateless: every POST gets a fresh McpServer bound to the
-// caller, so there is no session state to leak between users. Auth is a
-// personal access token only (tokens.patAuth has already resolved it into
-// req.user); every tool runs as that user through the same functions the
+// caller, so there is no session state to leak between users. Auth is an
+// OAuth access token issued by Superkey itself (src/oauth.js, which also
+// verifies it and re-checks the user); every tool runs as the user who
+// approved the connection, through the same functions the
 // HTTP routes use, so the permission rules (users only grant labels they
 // hold, restricted-servers.json, admin-only operations) cannot drift apart.
 //
@@ -30,7 +31,7 @@ const INSTRUCTIONS = `Superkey manages SSH access to the Logivations / Pixel Rob
 Servers carry labels (by default the site/config they come from, e.g. "brummer", "kaufland").
 People get access through Google groups wired to labels; TEAM agents (shared nemo agents,
 Linux account agent_<name>) get access when a label is attached to them.
-You act as the user who owns the API token: you can only attach labels that user holds
+You act as the user who connected this app: you can only attach labels that user holds
 (admins: any), and restricted servers (restricted-servers.json) may refuse agent access entirely.
 Typical flow: list_agents -> list_grantable_labels -> grant_label -> deploy_status.
 ${DEPLOY_NOTE}`;
@@ -116,7 +117,7 @@ function resolveLabel(ref) {
 
 const nameOrId = z.union([z.string(), z.number()]);
 
-function buildServer(user, pat, core) {
+function buildServer(user, auth, core) {
   const server = new McpServer(
     { name: 'superkey', version: '1.0.0' },
     { instructions: INSTRUCTIONS }
@@ -125,7 +126,7 @@ function buildServer(user, pat, core) {
 
   server.registerTool('whoami', {
     title: 'Who am I',
-    description: 'The Superkey user this API token acts as: email, Linux username on the servers, ' +
+    description: 'The Superkey user this connection acts as: email, Linux username on the servers, ' +
       'whether they are a Superkey admin, and their Google groups (which decide what they can reach and grant).',
     inputSchema: {},
     annotations: readOnly
@@ -135,7 +136,10 @@ function buildServer(user, pat, core) {
     linux_username: core.emailToUsername(user.email),
     isAdmin: core.isAdminUser(user.id),
     groups: core.userGroupNames(user.id),
-    token: { name: pat.name, prefix: pat.prefix, expires_at: core.sqlUtc(pat.expires_at) }
+    connection: {
+      client: (db.prepare('SELECT client_name FROM oauth_clients WHERE client_id = ?').get(auth.clientId) || {}).client_name || null,
+      access_token_expires_at: new Date(auth.expiresAt * 1000).toISOString()
+    }
   })));
 
   server.registerTool('search_servers', {
@@ -410,33 +414,29 @@ function sendJsonRpcError(res, status, code, message) {
   res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
 }
 
-// Mount /mcp on the app. `core` is the shared logic from server.js.
-function mount(app, core) {
-  // MCP clients that get a 401 may probe OAuth discovery. There is no OAuth
-  // here — say so in JSON instead of letting the SPA fallback answer with
-  // index.html.
-  app.get(/^\/\.well-known\/(oauth-|openid-)/, (req, res) => {
-    res.status(404).json({ error: 'Superkey has no OAuth server: the MCP endpoint takes a personal access token (Authorization: Bearer sk_pat_...).' });
-  });
+// Mount /mcp on the app. `requireAuth` is the OAuth bearer guard from
+// src/oauth.js (null when OAuth could not be configured); `core` is the
+// shared logic from server.js.
+function mount(app, requireAuth, core) {
+  if (!requireAuth) {
+    app.all('/mcp', (req, res) => sendJsonRpcError(res, 503, -32000,
+      'MCP is disabled on this Superkey: its OAuth issuer URL is not configured (PUBLIC_URL).'));
+    return;
+  }
 
-  app.all('/mcp', async (req, res) => {
-    // tokens.patAuth already answered 401 for a bad PAT; this catches
-    // requests that brought none (a session cookie does not count here).
-    if (req.authMethod !== 'pat') {
-      const url = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}/mcp`;
-      res.set('WWW-Authenticate', 'Bearer realm="superkey"');
-      return sendJsonRpcError(res, 401, -32001,
-        'Superkey MCP needs a personal access token. Create one in the Superkey web UI (API tokens tab) and ' +
-        `add the server with: claude mcp add --transport http superkey ${url} --header "Authorization: Bearer sk_pat_..."`);
-    }
+  app.all('/mcp', requireAuth, async (req, res) => {
     if (req.method !== 'POST') {
       // Stateless server: no standalone SSE stream (GET) and no session to
       // delete (DELETE).
       res.set('Allow', 'POST');
       return sendJsonRpcError(res, 405, -32000, 'Method not allowed: this MCP server is stateless, use POST.');
     }
+    // requireAuth verified the token and that the user exists; load the
+    // same users row a session would carry.
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.auth.extra.userId);
+    if (!user) return sendJsonRpcError(res, 401, -32001, 'User no longer exists');
 
-    const server = buildServer(req.user, req.pat, core);
+    const server = buildServer(user, req.auth, core);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => {
       transport.close();

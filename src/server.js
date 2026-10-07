@@ -11,7 +11,7 @@ const fs = require('fs');
 const archiver = require('archiver');
 const db = require('./database');
 const restricted = require('./restricted');
-const tokens = require('./tokens');
+const oauth = require('./oauth');
 const mcp = require('./mcp');
 
 // An Error carrying the HTTP status a route should answer with. Shared
@@ -225,18 +225,25 @@ function computeServerKeysHash(server) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Caddy (same docker network) and the host-local deploy runner are the only
+// direct peers; trusting their X-Forwarded-* gives the real client IP to
+// the OAuth endpoints' rate limits instead of lumping everyone together.
+app.set('trust proxy', 'loopback, uniquelocal');
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Requests authenticated by a personal access token never touch the
-// session: no cookie is read, created or refreshed for them, so a cookie
-// sent alongside a PAT cannot change who the request runs as.
-function unlessPat(middleware) {
-  return (req, res, next) => (tokens.isPatRequest(req) ? next() : middleware(req, res, next));
+// OAuth access tokens are for /mcp only (src/oauth.js); on /api/* they are
+// refused outright, and requests carrying one never touch the session — no
+// cookie is read, created or refreshed — so a cookie sent along cannot
+// stand in for the token.
+app.use(oauth.rejectOAuthOutsideMcp);
+function unlessOAuthBearer(middleware) {
+  return (req, res, next) => (oauth.isOAuthBearer(req) ? next() : middleware(req, res, next));
 }
 
 // Use SQLite for session storage (persists across restarts)
-app.use(unlessPat(session({
+app.use(unlessOAuthBearer(session({
   store: new SqliteStore({
     client: db,
     expired: {
@@ -254,9 +261,7 @@ app.use(unlessPat(session({
 })));
 
 app.use(passport.initialize());
-app.use(unlessPat(passport.session()));
-// "Authorization: Bearer sk_pat_..." -> req.user = the token's owner.
-app.use(tokens.patAuth);
+app.use(unlessOAuthBearer(passport.session()));
 
 // Service account auth for domain-wide group sync
 let serviceAccountAuth = null;
@@ -594,33 +599,16 @@ passport.deserializeUser((data, done) => {
   done(null, user);
 });
 
-// Auth middleware. A request is authenticated either by its session cookie
-// (Google SSO) or by a personal access token (tokens.patAuth); both leave the
-// same users row in req.user, so every route below works with either.
-function authenticated(req) {
-  return req.authMethod === 'pat' || req.isAuthenticated();
-}
-
+// Auth middleware
 function isAuthenticated(req, res, next) {
-  if (authenticated(req)) return next();
+  if (req.isAuthenticated()) return next();
   res.status(401).json({ error: 'Not authenticated' });
 }
 
 function isAdmin(req, res, next) {
-  if (!authenticated(req)) return res.status(401).json({ error: 'Not authenticated' });
+  if (!req.isAuthenticated()) return res.status(401).json({ error: 'Not authenticated' });
   if (isAdminUser(req.user.id)) return next();
   res.status(403).json({ error: 'Admin access required' });
-}
-
-// Signed-in through the browser, not with a PAT. Token management is
-// session-only, so a leaked token cannot mint itself successors that
-// outlive its revocation.
-function isSessionAuthenticated(req, res, next) {
-  if (req.authMethod === 'pat') {
-    return res.status(403).json({ error: 'API tokens cannot manage API tokens. Sign in to the Superkey web UI.' });
-  }
-  if (req.isAuthenticated()) return next();
-  res.status(401).json({ error: 'Not authenticated' });
 }
 
 function isAdminUser(userId) {
@@ -673,9 +661,16 @@ app.get('/auth/google', passport.authenticate('google', {
   prompt: 'consent'
 }));
 
+// keepSessionInfo: passport regenerates the session on login; keep
+// returnTo so an OAuth authorization (src/oauth.js) resumes at its consent
+// page. Only local /oauth/ paths are followed.
 app.get('/auth/google/callback',
-  passport.authenticate('google', { failureRedirect: '/login' }),
-  (req, res) => res.redirect('/')
+  passport.authenticate('google', { failureRedirect: '/login', keepSessionInfo: true }),
+  (req, res) => {
+    const to = req.session.returnTo;
+    delete req.session.returnTo;
+    res.redirect(typeof to === 'string' && to.startsWith('/oauth/') ? to : '/');
+  }
 );
 
 app.get('/auth/logout', (req, res) => {
@@ -697,27 +692,6 @@ app.get('/api/me', isAuthenticated, (req, res) => {
     isAdmin: isAdminUser(req.user.id),
     groups: userGroupNames(req.user.id)
   });
-});
-
-// Personal access tokens (see src/tokens.js). Managed from a browser
-// session only; the plaintext token is in the POST response and nowhere
-// else, ever.
-app.get('/api/me/tokens', isSessionAuthenticated, (req, res) => {
-  res.json(tokens.listTokens(req.user.id));
-});
-
-app.post('/api/me/tokens', isSessionAuthenticated, (req, res) => {
-  try {
-    const { name, expiresInDays } = req.body || {};
-    res.json(tokens.createToken(req.user.id, name, expiresInDays));
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/me/tokens/:id', isSessionAuthenticated, (req, res) => {
-  if (!tokens.revokeToken(req.user.id, req.params.id)) return res.status(404).json({ error: 'Token not found' });
-  res.json({ success: true });
 });
 
 // Sync all users' groups (admin only)
@@ -987,8 +961,8 @@ function grantBlockedBy(user, labelId) {
     .filter(x => !restricted.userMayManageAgents(x.policy, user.email));
 }
 
-// Attach a label to a team agent on behalf of `user` (from a session or a
-// PAT). The HTTP route and the MCP grant_label tool both go through here,
+// Attach a label to a team agent on behalf of `user` (from a session or an
+// MCP connection). The HTTP route and the MCP grant_label tool both go through here,
 // so they enforce the same rules. Throws httpError; returns whether
 // anything changed (attaching a label the agent already has is a no-op).
 function grantAgentLabel(user, agentId, labelId) {
@@ -1847,10 +1821,14 @@ app.get('/api/stale-servers', isDeployApi, (req, res) => {
   }
 });
 
+// OAuth authorization server for /mcp (src/oauth.js): metadata, /register,
+// /authorize, /token, /revoke, the consent page and Connected apps.
+const requireMcpAuth = oauth.mount(app, { isAuthenticated });
+
 // MCP endpoint (src/mcp.js): the operations above as tools for LLM clients,
-// PAT-authenticated, running as the token's owner through the same shared
-// functions as the routes.
-mcp.mount(app, {
+// OAuth-authenticated, running as the connecting user through the same
+// shared functions as the routes.
+mcp.mount(app, requireMcpAuth, {
   emailToUsername,
   agentAccount,
   sqlUtc,

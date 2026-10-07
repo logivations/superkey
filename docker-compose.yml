@@ -17,6 +17,9 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL:-http://localhost:3000/auth/google/callback}
+      # External base URL: issuer/resource of the MCP OAuth server. Empty =
+      # origin of GOOGLE_CALLBACK_URL.
+      - PUBLIC_URL=${PUBLIC_URL:-}
       - GOOGLE_SERVICE_ACCOUNT_KEY=/app/credentials.json
       - GOOGLE_ADMIN_EMAIL=${GOOGLE_ADMIN_EMAIL}
       - SESSION_SECRET=${SESSION_SECRET}
