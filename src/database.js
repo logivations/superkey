@@ -146,6 +146,28 @@ db.exec(`
   );
 `);
 
+// Personal access tokens (PATs): a user's bearer tokens for the API and the
+// MCP endpoint (/mcp). A PAT acts exactly as its owner — same groups, same
+// admin status, re-read on every request — so it never carries access of its
+// own. Only the sha256 of the token is stored; `prefix` (the first few
+// characters) is kept so the UI can tell tokens apart. Revoked rows stay
+// for the record.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    prefix TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME,
+    expires_at DATETIME,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+`);
+
 // Ensure superkey_admins group exists
 db.prepare(`INSERT OR IGNORE INTO groups (name) VALUES ('superkey_admins')`).run();
 

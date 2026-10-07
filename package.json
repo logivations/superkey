@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js",
     "deploy": "./scripts/deploy.sh",
     "deploy:dry-run": "./scripts/deploy.sh --dry-run"
   },

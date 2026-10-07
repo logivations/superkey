@@ -11,6 +11,7 @@ const fs = require('fs');
 const archiver = require('archiver');
 const db = require('./database');
 const restricted = require('./restricted');
+const tokens = require('./tokens');
 
 // An Error carrying the HTTP status a route should answer with. Shared
 // logic (used by both the HTTP routes and the MCP tools) throws these.
@@ -226,8 +227,15 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// Requests authenticated by a personal access token never touch the
+// session: no cookie is read, created or refreshed for them, so a cookie
+// sent alongside a PAT cannot change who the request runs as.
+function unlessPat(middleware) {
+  return (req, res, next) => (tokens.isPatRequest(req) ? next() : middleware(req, res, next));
+}
+
 // Use SQLite for session storage (persists across restarts)
-app.use(session({
+app.use(unlessPat(session({
   store: new SqliteStore({
     client: db,
     expired: {
@@ -242,10 +250,12 @@ app.use(session({
     secure: false, // Set to true if using HTTPS
     maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   }
-}));
+})));
 
 app.use(passport.initialize());
-app.use(passport.session());
+app.use(unlessPat(passport.session()));
+// "Authorization: Bearer sk_pat_..." -> req.user = the token's owner.
+app.use(tokens.patAuth);
 
 // Service account auth for domain-wide group sync
 let serviceAccountAuth = null;
@@ -583,23 +593,33 @@ passport.deserializeUser((data, done) => {
   done(null, user);
 });
 
-// Auth middleware
+// Auth middleware. A request is authenticated either by its session cookie
+// (Google SSO) or by a personal access token (tokens.patAuth); both leave the
+// same users row in req.user, so every route below works with either.
+function authenticated(req) {
+  return req.authMethod === 'pat' || req.isAuthenticated();
+}
+
 function isAuthenticated(req, res, next) {
-  if (req.isAuthenticated()) return next();
+  if (authenticated(req)) return next();
   res.status(401).json({ error: 'Not authenticated' });
 }
 
 function isAdmin(req, res, next) {
-  if (!req.isAuthenticated()) return res.status(401).json({ error: 'Not authenticated' });
-
-  const adminGroup = db.prepare(`
-    SELECT g.id FROM groups g
-    JOIN user_groups ug ON g.id = ug.group_id
-    WHERE g.name = 'superkey_admins' AND ug.user_id = ?
-  `).get(req.user.id);
-
-  if (adminGroup) return next();
+  if (!authenticated(req)) return res.status(401).json({ error: 'Not authenticated' });
+  if (isAdminUser(req.user.id)) return next();
   res.status(403).json({ error: 'Admin access required' });
+}
+
+// Signed-in through the browser, not with a PAT. Token management is
+// session-only, so a leaked token cannot mint itself successors that
+// outlive its revocation.
+function isSessionAuthenticated(req, res, next) {
+  if (req.authMethod === 'pat') {
+    return res.status(403).json({ error: 'API tokens cannot manage API tokens. Sign in to the Superkey web UI.' });
+  }
+  if (req.isAuthenticated()) return next();
+  res.status(401).json({ error: 'Not authenticated' });
 }
 
 function isAdminUser(userId) {
@@ -661,25 +681,42 @@ app.get('/auth/logout', (req, res) => {
   req.logout(() => res.redirect('/'));
 });
 
-app.get('/api/me', isAuthenticated, (req, res) => {
-  const adminGroup = db.prepare(`
-    SELECT g.id FROM groups g
-    JOIN user_groups ug ON g.id = ug.group_id
-    WHERE g.name = 'superkey_admins' AND ug.user_id = ?
-  `).get(req.user.id);
-
-  const userGroups = db.prepare(`
+function userGroupNames(userId) {
+  return db.prepare(`
     SELECT g.name FROM groups g
     JOIN user_groups ug ON g.id = ug.group_id
     WHERE ug.user_id = ?
-  `).all(req.user.id);
+  `).all(userId).map(g => g.name);
+}
 
+app.get('/api/me', isAuthenticated, (req, res) => {
   res.json({
     ...req.user,
     accessToken: undefined,
-    isAdmin: !!adminGroup,
-    groups: userGroups.map(g => g.name)
+    isAdmin: isAdminUser(req.user.id),
+    groups: userGroupNames(req.user.id)
   });
+});
+
+// Personal access tokens (see src/tokens.js). Managed from a browser
+// session only; the plaintext token is in the POST response and nowhere
+// else, ever.
+app.get('/api/me/tokens', isSessionAuthenticated, (req, res) => {
+  res.json(tokens.listTokens(req.user.id));
+});
+
+app.post('/api/me/tokens', isSessionAuthenticated, (req, res) => {
+  try {
+    const { name, expiresInDays } = req.body || {};
+    res.json(tokens.createToken(req.user.id, name, expiresInDays));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/me/tokens/:id', isSessionAuthenticated, (req, res) => {
+  if (!tokens.revokeToken(req.user.id, req.params.id)) return res.status(404).json({ error: 'Token not found' });
+  res.json({ success: true });
 });
 
 // Sync all users' groups (admin only)
