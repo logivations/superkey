@@ -444,6 +444,14 @@ if getent group superkey &>/dev/null; then
     done
 fi
 
+# key_lines_with_options <options> <public key>: one authorized_keys line per
+# non-empty key line, EACH carrying the options. Keys stored before upload
+# validation can span several lines; prefixing only the first left the others
+# unrestricted (a plain shell on unprivileged servers, no restrict for bots).
+key_lines_with_options() {
+    printf '%s\n' "$2" | awk -v o="$1" 'NF { print o " " $0 }'
+}
+
 setup_user() {
     local USERNAME="$1"
     local FULL_NAME="$2"
@@ -495,7 +503,7 @@ setup_user() {
     # KEY_OPTS is empty except on unprivileged servers (restrict,pty,command=
     # -- computed and validated server-side).
     if [ -n "$KEY_OPTS" ]; then
-        printf '%s %s\n' "$KEY_OPTS" "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+        key_lines_with_options "$KEY_OPTS" "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
     else
         echo "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
     fi
@@ -576,7 +584,7 @@ setup_bot() {
     sudo -n mkdir -p "$SSH_DIR"
     sudo -n chmod 700 "$SSH_DIR"
     # KEY_OPTS is computed and validated server-side (restrict,pty[,from=...]).
-    printf '%s %s\n' "$KEY_OPTS" "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+    key_lines_with_options "$KEY_OPTS" "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
     sudo -n chmod 600 "$AUTH_KEYS"
     sudo -n chown -R "$ACCT:$ACCT" "$SSH_DIR"
 
