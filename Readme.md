@@ -115,6 +115,33 @@ policy is enforced in `/api/deploy-data` (authoritative), the access
 views, the manual setup download, and the UI actions that would
 contradict it.
 
+### Unprivileged servers
+
+A second section of the same file, **`unprivileged_servers`**, changes
+*how* accounts are deployed instead of *who* is: on a matching server
+every superkey account — humans, personal bots and team agents — gets the
+`superkey` marker group only (no `docker`, `logi`, `superkey_ops`,
+`superkey_agents`, `adm`, `systemd-journal`; anything it held before is
+removed on the next deploy), and with `forced_command` its key becomes
+`restrict,pty,command="…"`, so a login can only run that command. Who is
+deployed is still decided by label wiring (and `restricted_servers`, if a
+host matches both). Use it for hosts no superkey admin should administer
+through their superkey account, e.g. one holding other people's data.
+
+```json
+{
+  "unprivileged_servers": [
+    { "match": "nemo", "forced_command": "sudo -n /usr/local/sbin/nemo-enter" }
+  ]
+}
+```
+
+`forced_command` is optional and limited to plain characters (no quotes,
+`$`, backticks); whatever it runs must be installed on the host itself.
+The first matching entry wins. Note that the `superkey-deploy` account
+itself keeps its sudo — root on the host stays with whoever holds the
+machine deploy key (and the host's own root keys).
+
 ## Agents
 
 Two kinds of automation identities, both deployed as separate Linux

@@ -144,7 +144,9 @@ process_server() {
     # Servers with nothing to deploy that were never deployed are simply not
     # enrolled — skip them. A previously deployed server that is now empty
     # still gets processed so the revoke pass locks remaining accounts.
-    local USER_COUNT AGENT_COUNT EVER_DEPLOYED
+    local USER_COUNT AGENT_COUNT EVER_DEPLOYED UNPRIVILEGED
+    UNPRIVILEGED=$(echo "$server" | jq -r '.unprivileged // false')
+    [ "$UNPRIVILEGED" = "true" ] && echo "  Unprivileged server: superkey group only, forced-command keys"
     USER_COUNT=$(echo "$server" | jq '.users | length')
     AGENT_COUNT=$(echo "$server" | jq '.agents // [] | length')
     EVER_DEPLOYED=$(echo "$server" | jq -r '.ever_deployed // false')
@@ -184,9 +186,10 @@ process_server() {
     # key (a user may have bots but no personal key on this host).
     local USER_CALLS=""
     while read -r user; do
-        local EMAIL PUBLIC_KEY NAME USERNAME
+        local EMAIL PUBLIC_KEY NAME USERNAME UOPTS
         EMAIL=$(echo "$user" | jq -r '.email')
         PUBLIC_KEY=$(echo "$user" | jq -r '.public_key // ""')
+        UOPTS=$(echo "$user" | jq -r '.key_options // ""')
         NAME=$(echo "$user" | jq -r '.name // ""')
         USERNAME=$(echo "$EMAIL" | cut -d'@' -f1 | tr '.' '_')
 
@@ -194,8 +197,8 @@ process_server() {
             if [ "$DRY_RUN" = true ]; then
                 echo "    [DRY RUN] Would set up user $USERNAME ($EMAIL)"
             else
-                USER_CALLS+=$(printf 'setup_user %q %q %q || OVERALL_STATUS=1\n' \
-                    "$USERNAME" "$NAME" "$PUBLIC_KEY")
+                USER_CALLS+=$(printf 'setup_user %q %q %q %q || OVERALL_STATUS=1\n' \
+                    "$USERNAME" "$NAME" "$PUBLIC_KEY" "$UOPTS")
                 USER_CALLS+=$'\n'
             fi
         else
@@ -231,11 +234,14 @@ process_server() {
     # bot accounts: unprivileged, hardened key, superkey/adm/systemd-journal.
     while read -r agent; do
         [ -z "$agent" ] && continue
-        local AACCT AKEY AOPTS ANAME
+        local AACCT AKEY AOPTS ANAME AGROUPS
         AACCT=$(echo "$agent" | jq -r '.account')
         AKEY=$(echo "$agent" | jq -r '.public_key // ""')
         AOPTS=$(echo "$agent" | jq -r '.key_options // "restrict,pty"')
         ANAME=$(echo "$agent" | jq -r '.name')
+        # Server-computed; empty on unprivileged servers. The fallback keeps
+        # this script working against a superkey that predates the field.
+        AGROUPS=$(echo "$agent" | jq -r 'if has("extra_groups") then .extra_groups else "docker superkey_agents" end')
 
         if [ -z "$AKEY" ]; then
             continue
@@ -247,7 +253,7 @@ process_server() {
         fi
 
         USER_CALLS+=$(printf 'setup_bot %q %q %q %q %q || OVERALL_STATUS=1\n' \
-            "$AACCT" "$ANAME" "$AKEY" "$AOPTS" "docker superkey_agents")
+            "$AACCT" "$ANAME" "$AKEY" "$AOPTS" "$AGROUPS")
         USER_CALLS+=$'\n'
     done < <(echo "$server" | jq -c '.agents[]?')
 
@@ -265,6 +271,30 @@ fi
 
 # Set once, first: every failed step below turns it into the host's exit status.
 OVERALL_STATUS=0
+
+# Group sets. On an unprivileged server (restricted-servers.json) every
+# account gets the superkey marker group only, and anything privileged it
+# still holds from before is taken away (strip_groups).
+HUMAN_GROUPS="superkey logi docker superkey_ops adm systemd-journal"
+BOT_BASE_GROUPS="superkey adm systemd-journal"
+PRIVILEGED_GROUPS="logi docker superkey_agents superkey_ops adm systemd-journal"
+if [ "$UNPRIVILEGED" = "true" ]; then
+    HUMAN_GROUPS="superkey"
+    BOT_BASE_GROUPS="superkey"
+fi
+
+# strip_groups <account> <groups to keep> <candidates>: leave every candidate
+# group the account must not be in.
+strip_groups() {
+    local acct="$1" keep="$2" g
+    for g in $3; do
+        case " $keep " in *" $g "*) continue ;; esac
+        if id -nG "$acct" | grep -qw "$g"; then
+            echo "      Removing $acct from $g group..."
+            sudo -n gpasswd -d "$acct" "$g" >/dev/null || echo "      Warning: Could not remove from $g group"
+        fi
+    done
+}
 
 # Ensure required groups exist
 for g in superkey logi docker superkey_agents superkey_ops; do
@@ -418,6 +448,7 @@ setup_user() {
     local USERNAME="$1"
     local FULL_NAME="$2"
     local PUBLIC_KEY="$3"
+    local KEY_OPTS="$4"
 
     echo "    Setting up user: $USERNAME"
 
@@ -436,7 +467,8 @@ setup_user() {
     # adm/systemd-journal are standard system groups (for reading system logs)
     # and are only joined if they already exist on the host. superkey_ops is
     # the humans' scoped sudo (see above): bots and agents are never in it.
-    for g in superkey logi docker superkey_ops adm systemd-journal; do
+    # Unprivileged servers: superkey only (HUMAN_GROUPS above).
+    for g in $HUMAN_GROUPS; do
         if ! getent group "$g" &>/dev/null; then
             continue
         fi
@@ -445,6 +477,9 @@ setup_user() {
             sudo -n usermod -aG "$g" "$USERNAME" || echo "      Warning: Could not add to $g group"
         fi
     done
+    if [ "$UNPRIVILEGED" = "true" ]; then
+        strip_groups "$USERNAME" "$HUMAN_GROUPS" "$PRIVILEGED_GROUPS"
+    fi
 
     local USER_HOME SSH_DIR AUTH_KEYS
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
@@ -457,7 +492,13 @@ setup_user() {
 
     sudo -n mkdir -p "$SSH_DIR"
     sudo -n chmod 700 "$SSH_DIR"
-    echo "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+    # KEY_OPTS is empty except on unprivileged servers (restrict,pty,command=
+    # -- computed and validated server-side).
+    if [ -n "$KEY_OPTS" ]; then
+        printf '%s %s\n' "$KEY_OPTS" "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+    else
+        echo "$PUBLIC_KEY" | sudo -n tee "$AUTH_KEYS" > /dev/null
+    fi
     sudo -n chmod 600 "$AUTH_KEYS"
     sudo -n chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
 
@@ -505,7 +546,7 @@ setup_bot() {
     # docker commands. Their access is granted per label, on restricted servers
     # only by allowed_users. adm/systemd-journal are standard system groups,
     # joined only if they already exist on the host.
-    for g in superkey adm systemd-journal $EXTRA_GROUPS; do
+    for g in $BOT_BASE_GROUPS $EXTRA_GROUPS; do
         if ! getent group "$g" &>/dev/null; then
             continue
         fi
@@ -515,14 +556,13 @@ setup_bot() {
         fi
     done
     # The privileged extras are granted per account, so they must also be
-    # taken away again (a personal bot whose owner switched docker off).
-    for g in docker superkey_agents; do
-        case " $EXTRA_GROUPS " in *" $g "*) continue ;; esac
-        if id -nG "$ACCT" | grep -qw "$g"; then
-            echo "      Removing $ACCT from $g group..."
-            sudo -n gpasswd -d "$ACCT" "$g" >/dev/null || echo "      Warning: Could not remove from $g group"
-        fi
-    done
+    # taken away again (a personal bot whose owner switched docker off; any
+    # account on a server that became unprivileged).
+    if [ "$UNPRIVILEGED" = "true" ]; then
+        strip_groups "$ACCT" "$BOT_BASE_GROUPS $EXTRA_GROUPS" "$PRIVILEGED_GROUPS"
+    else
+        strip_groups "$ACCT" "$EXTRA_GROUPS" "docker superkey_agents"
+    fi
 
     local USER_HOME SSH_DIR AUTH_KEYS
     USER_HOME=$(getent passwd "$ACCT" | cut -d: -f6)
@@ -548,6 +588,7 @@ REMOTE_EOF
 
         local REMOTE_SCRIPT
         REMOTE_SCRIPT="AUTHORIZED_USERS=$(printf '%q' "$AUTHORIZED_USERS")
+UNPRIVILEGED=$(printf '%q' "$UNPRIVILEGED")
 ${REMOTE_BODY}
 ${USER_CALLS}
 exit \$OVERALL_STATUS"

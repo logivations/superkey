@@ -30,6 +30,9 @@ function setupEnv(port) {
     restricted_servers: [
       { match: 'mcpservers', allowed_users: ['carol@example.com'], allow_agents: true },
       { match: 'prod-*', allowed_groups: ['infra_core'], allow_agents: false }
+    ],
+    unprivileged_servers: [
+      { match: 'nemo', forced_command: 'sudo -n /usr/local/sbin/nemo-enter' }
     ]
   }));
   Object.assign(process.env, {
