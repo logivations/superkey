@@ -6,5 +6,12 @@
       "allowed_users": ["johannes.plapp@lvairo.com"],
       "allow_agents": true
     }
+  ],
+  "unprivileged_servers": [
+    {
+      "_why": "nemo holds every colleague's agent container and secrets: no superkey account may administer it. Logins land in the caller's own nemo instance via /usr/local/sbin/nemo-enter (installed on the host by hand). Admin = root key on the host only.",
+      "match": "nemo",
+      "forced_command": "sudo -n /usr/local/sbin/nemo-enter"
+    }
   ]
 }

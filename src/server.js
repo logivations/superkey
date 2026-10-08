@@ -53,9 +53,13 @@ function agentAccount(name) {
 // automation, so we lock the key down: `restrict` disables all forwarding
 // and `pty` is re-enabled (agents commonly need a tty). An optional source
 // restriction (`from=`) means a leaked key is useless off the bot's host.
-function botKeyOptions(sourceCidr) {
+// On unprivileged servers (restricted-servers.json) every key -- humans'
+// too -- also carries the policy's forced command; it is validated at
+// policy load to contain no quotes.
+function botKeyOptions(sourceCidr, forcedCommand) {
   let opts = 'restrict,pty';
   if (sourceCidr) opts += `,from="${sourceCidr}"`;
+  if (forcedCommand) opts += `,command="${forcedCommand}"`;
   return opts;
 }
 
@@ -165,6 +169,7 @@ function serverAuthorizedUsers(server) {
 function serverTeamAgents(server) {
   const policy = restricted.policyFor(server.hostname);
   if (policy && !policy.allow_agents) return [];
+  const unpriv = restricted.unprivilegedFor(server.hostname);
   return db.prepare(`
     SELECT DISTINCT a.name, a.public_key, a.source_cidr FROM team_agents a
     JOIN agent_labels al ON a.id = al.agent_id
@@ -176,7 +181,10 @@ function serverTeamAgents(server) {
     account: agentAccount(a.name),
     public_key: a.public_key,
     source_cidr: a.source_cidr,
-    key_options: botKeyOptions(a.source_cidr)
+    key_options: botKeyOptions(a.source_cidr, unpriv && unpriv.forced_command),
+    // Groups on top of the base set (see deploy.sh setup_bot): team agents
+    // drive the deploy tooling, except on unprivileged servers.
+    extra_groups: unpriv ? '' : 'docker superkey_agents'
   }));
 }
 
@@ -227,7 +235,10 @@ function serverUserBots(server, userId) {
 function computeServerKeysHash(server) {
   const users = serverAuthorizedUsers(server);
   const agents = serverTeamAgents(server);
+  const unpriv = restricted.unprivilegedFor(server.hostname);
   const data = [
+    // Only when set, so hashes of ordinary servers stay as they were.
+    ...(unpriv ? [`unprivileged:${unpriv.forced_command || ''}`] : []),
     ...users.filter(u => u.public_key).map(u => `${u.email}:${u.public_key}`),
     // Suffix only when set, so hashes of agents without docker stay as they were.
     ...users.flatMap(u => serverUserBots(server, u.id).map(b =>
@@ -1834,26 +1845,32 @@ app.get('/api/deploy-data', isDeployApi, (req, res) => {
     const result = {
       servers: servers.map(server => {
         const users = serverAuthorizedUsers(server);
+        const unpriv = restricted.unprivilegedFor(server.hostname);
+        const forced = unpriv && unpriv.forced_command;
         return {
           hostname: server.hostname,
           description: server.description,
           restricted: !!restricted.policyFor(server.hostname),
+          // Unprivileged: every account gets only the superkey group, and
+          // humans' keys the same restrict,pty[,command=] options as bots.
+          unprivileged: !!unpriv,
           ever_deployed: !!server.last_deployed_at,
           expected_keys_hash: computeServerKeysHash(server),
           users: users.map(u => ({
             email: u.email,
             name: u.name,
             public_key: u.public_key,
+            key_options: unpriv ? botKeyOptions(null, forced) : '',
             bots: serverUserBots(server, u.id).map(b => ({
               name: b.name,
               account: botAccount(u.email, b.name),
               public_key: b.public_key,
-              key_options: botKeyOptions(b.source_cidr),
+              key_options: botKeyOptions(b.source_cidr, forced),
               // Groups on top of the fixed superkey/adm/systemd-journal set.
               // Docker comes with superkey_agents (run-as the deploy user, e.g.
               // sudo -u logi for ~logi/deploy), exactly like a team agent:
               // docker is root-equivalent already, so it adds no privilege tier.
-              extra_groups: b.docker ? 'docker superkey_agents' : ''
+              extra_groups: b.docker && !unpriv ? 'docker superkey_agents' : ''
             }))
           })),
           agents: serverTeamAgents(server)

@@ -24,6 +24,24 @@
 // At least one of allowed_groups / allowed_users must be present. If
 // several entries match a hostname, the lists are unioned and allow_agents
 // is true if any entry allows it.
+//
+// A second, independent section makes servers UNPRIVILEGED: who is deployed
+// is still decided by label wiring (and restricted_servers, if a host is in
+// both), but every account superkey deploys there -- humans, personal bots
+// and team agents alike -- gets only the `superkey` marker group (no docker,
+// logi, superkey_ops, superkey_agents, adm, systemd-journal) and, when
+// forced_command is set, a `restrict,pty,command="..."` key, so a login can
+// do nothing but run that command. For hosts no superkey admin should be
+// able to administer through superkey accounts (e.g. a host holding other
+// people's data). Like the restricted list, loosening it takes a commit.
+//
+//   {
+//     "unprivileged_servers": [
+//       { "match": "nemo", "forced_command": "sudo -n /usr/local/sbin/nemo-enter" }
+//     ]
+//   }
+//
+// If several entries match, the first one wins.
 
 const fs = require('fs');
 const path = require('path');
@@ -32,6 +50,11 @@ const POLICY_PATH = process.env.RESTRICTED_SERVERS_PATH
   || path.join(__dirname, '..', 'restricted-servers.json');
 
 let entries = [];
+let unprivilegedEntries = [];
+
+// forced_command goes verbatim into authorized_keys as command="...", so
+// anything that could break out of that quoted option is refused.
+const FORCED_COMMAND_RE = /^[A-Za-z0-9 _.,:=\/+-]{1,200}$/;
 
 function globToRegex(glob) {
   const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -42,6 +65,7 @@ function globToRegex(glob) {
 
 function loadPolicy() {
   entries = [];
+  unprivilegedEntries = [];
   if (!fs.existsSync(POLICY_PATH)) {
     console.log(`Restricted-servers policy: no file at ${POLICY_PATH}, no servers restricted`);
     return;
@@ -62,7 +86,18 @@ function loadPolicy() {
       allow_agents: !!e.allow_agents
     });
   }
-  console.log(`Restricted-servers policy: ${entries.length} rule(s) loaded from ${POLICY_PATH}`);
+  for (const e of raw.unprivileged_servers || []) {
+    if (!e.match || (e.forced_command !== undefined
+        && (typeof e.forced_command !== 'string' || !FORCED_COMMAND_RE.test(e.forced_command)))) {
+      throw new Error(`restricted-servers.json: unprivileged_servers entries need "match" and an optional plain forced_command (bad entry: ${JSON.stringify(e)})`);
+    }
+    unprivilegedEntries.push({
+      regex: globToRegex(e.match),
+      match: e.match,
+      forced_command: e.forced_command || null
+    });
+  }
+  console.log(`Restricted-servers policy: ${entries.length} restricted, ${unprivilegedEntries.length} unprivileged rule(s) loaded from ${POLICY_PATH}`);
 }
 
 // Policy for a hostname: null if unrestricted, otherwise the merged
@@ -75,6 +110,13 @@ function policyFor(hostname) {
     allowed_users: [...new Set(matching.flatMap(e => e.allowed_users))],
     allow_agents: matching.some(e => e.allow_agents)
   };
+}
+
+// Unprivileged policy for a hostname: null, or { forced_command } (null
+// command = unprivileged shell) of the first matching rule.
+function unprivilegedFor(hostname) {
+  const e = unprivilegedEntries.find(x => x.regex.test(hostname));
+  return e ? { forced_command: e.forced_command } : null;
 }
 
 // Whether this user may manage agent access on a server with this policy.
@@ -90,4 +132,4 @@ function userMayManageAgents(policy, email) {
 // with restrictions silently dropped.
 loadPolicy();
 
-module.exports = { policyFor, userMayManageAgents, POLICY_PATH };
+module.exports = { policyFor, unprivilegedFor, userMayManageAgents, POLICY_PATH };

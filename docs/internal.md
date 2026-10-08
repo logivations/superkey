@@ -94,6 +94,8 @@ Users ──► Groups ──► Labels ──► Servers
 Servers matched by `restricted-servers.json` (in git) override this chain:
 only the listed groups/users are ever deployed there. See the Readme's
 *Restricted servers* section.
+Servers in its `unprivileged_servers` section are deployed with no
+privileged groups and forced-command keys — see *Unprivileged servers*.
 
 ### Admin Access
 
